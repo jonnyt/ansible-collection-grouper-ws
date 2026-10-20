@@ -1,0 +1,121 @@
+---
+# Grouper's self-service JWT authentication, exercised against a real stack.
+#
+# This target self-skips unless grouper_ws_jwt_prefix is configured, because it
+# needs a local entity with a downloaded private key -- something the suite
+# cannot create for itself over the web service.
+#
+# The entity needs READ on the scratch folder, and UPDATE plus CREATE on it to
+# run the write half. Where it has less, the read assertions still hold.
+
+- name: grouper.ws JWT authentication
+  when:
+    - grouper_ws_jwt_prefix is defined
+    - grouper_ws_jwt_prefix | length > 0
+  module_defaults:
+    group/grouper.ws.all:
+      ws_url: "{{ grouper_ws_url }}"
+      jwt_prefix: "{{ grouper_ws_jwt_prefix }}"
+      jwt_private_key_path: "{{ grouper_ws_jwt_private_key_path | default(omit) }}"
+      jwt_private_key: "{{ grouper_ws_jwt_private_key | default(omit) }}"
+      api_version: "{{ grouper_ws_api_version }}"
+      validate_certs: "{{ grouper_ws_validate_certs }}"
+  vars:
+    test_jwt_stem: "{{ grouper_run_stem }}:jwt"
+    test_jwt_group: "{{ grouper_run_stem }}:jwt:members"
+  block:
+
+    - name: Read the scratch folder as the JWT entity
+      grouper.ws.stem_info:
+        name: "{{ grouper_run_stem }}"
+      register: jwt_read
+
+    - name: The JWT was accepted and the folder came back
+      ansible.builtin.assert:
+        that:
+          - jwt_read is not changed
+          - jwt_read.stems | length == 1
+          - jwt_read.stems[0].name == grouper_run_stem
+        quiet: true
+
+    - name: Create a folder as the JWT entity
+      grouper.ws.stem:
+        name: "{{ test_jwt_stem }}"
+        description: created over JWT authentication
+      register: jwt_created
+
+    - name: The folder was created
+      ansible.builtin.assert:
+        that:
+          - jwt_created is changed
+          - jwt_created.result_code == 'SUCCESS_INSERTED'
+        quiet: true
+
+    - name: Create the same folder again
+      grouper.ws.stem:
+        name: "{{ test_jwt_stem }}"
+        description: created over JWT authentication
+      register: jwt_repeated
+
+    # Each call signs a brand new JWT, so this also proves the second token of
+    # the run was accepted -- a cached one would have been rejected or reused.
+    - name: The repeat was a no-op
+      ansible.builtin.assert:
+        that:
+          - jwt_repeated is not changed
+          - jwt_repeated.result_code == 'SUCCESS_NO_CHANGES_NEEDED'
+        quiet: true
+
+    - name: Create a group as the JWT entity
+      grouper.ws.group:
+        name: "{{ test_jwt_group }}"
+        display_extension: Members
+        description: created over JWT authentication
+      register: jwt_group
+
+    - name: The group was created
+      ansible.builtin.assert:
+        that:
+          - jwt_group is changed
+          - jwt_group.group.name == test_jwt_group
+        quiet: true
+
+    - name: A prefix pasted with its Bearer word and no trailing underscore still works
+      grouper.ws.stem_info:
+        name: "{{ grouper_run_stem }}"
+        jwt_prefix: "Bearer {{ grouper_ws_jwt_prefix | regex_replace('_$', '') }}"
+      register: jwt_sloppy_prefix
+
+    - name: The sloppy prefix was normalised rather than rejected
+      ansible.builtin.assert:
+        that:
+          - jwt_sloppy_prefix.stems | length == 1
+        quiet: true
+
+    - name: An expired JWT is rejected with an explanation, not a bare 401
+      grouper.ws.stem_info:
+        name: "{{ grouper_run_stem }}"
+        # Grouper checks exp before it checks anything else about the token.
+        jwt_claims:
+          exp: 1000000000
+      register: jwt_expired
+      ignore_errors: true
+
+    # failed_when: false would make 'is failed' permanently false and let this
+    # pass vacuously; ignore_errors is what actually lets the assert fire.
+    - name: The failure named the JWT causes rather than the password ones
+      ansible.builtin.assert:
+        that:
+          - jwt_expired is failed
+          - "'401' in jwt_expired.msg"
+          - "'jwt_prefix' in jwt_expired.msg"
+          - "'maxValidTimeInSeconds' in jwt_expired.msg"
+        quiet: true
+
+- name: Say why the JWT target did nothing
+  when: grouper_ws_jwt_prefix is not defined or grouper_ws_jwt_prefix | length == 0
+  ansible.builtin.debug:
+    msg: >-
+      Skipped. Set grouper_ws_jwt_prefix and grouper_ws_jwt_private_key_path in
+      tests/integration/integration_config.yml to exercise JWT authentication.
+      Both come from a Grouper local entity's page in the UI.

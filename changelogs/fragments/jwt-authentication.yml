@@ -1,0 +1,13 @@
+---
+minor_changes:
+  - All modules - add Grouper's private key JWT authentication through the new
+    ``jwt_prefix``, ``jwt_private_key``, ``jwt_private_key_path``, ``jwt_claims``
+    and ``jwt_lifetime`` options. A JWT is signed locally for every web service
+    call, so the key never leaves the controller. The existing ``username`` /
+    ``password`` and ``token`` options are unchanged.
+  - All modules - a 401 response now explains the failure modes of whichever
+    credential was actually used, rather than always pointing at the password.
+  - All modules - a ``jwt_prefix`` that names no Grouper member is reported as
+    such. Grouper resolves the member before reading the JWT and throws when it
+    cannot, so this arrives as an HTTP 500 carrying a Java stack trace rather
+    than as an authentication failure.

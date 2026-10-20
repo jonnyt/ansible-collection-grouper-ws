@@ -1,0 +1,80 @@
+---
+# Shared setup. Every other target depends on this one, so these facts and
+# the scratch folder exist before any test runs.
+
+- name: Fail early with a useful message when the suite is not configured
+  ansible.builtin.assert:
+    that:
+      - grouper_ws_url is defined
+      - (grouper_ws_username is defined and grouper_ws_password is defined)
+        or grouper_ws_jwt_prefix is defined
+    fail_msg: >-
+      Integration tests need a Grouper endpoint and a credential. Copy
+      tests/integration/integration_config.yml.template to
+      tests/integration/integration_config.yml and fill it in.
+    quiet: true
+
+# The jwt_auth target needs both halves or neither; one alone is a typo, and
+# the module would only say so once it reached the first request.
+- name: Fail early when JWT authentication is half configured
+  ansible.builtin.assert:
+    that:
+      - grouper_ws_jwt_private_key_path is defined or grouper_ws_jwt_private_key is defined
+    fail_msg: >-
+      grouper_ws_jwt_prefix is set, so also set grouper_ws_jwt_private_key_path
+      (or grouper_ws_jwt_private_key). Both come from the local entity's page in
+      the Grouper UI.
+    quiet: true
+  when:
+    - grouper_ws_jwt_prefix is defined
+    - grouper_ws_jwt_prefix | length > 0
+
+- name: Build a unique id so repeated suite runs do not collide
+  ansible.builtin.set_fact:
+    grouper_run_id: "{{ lookup('pipe', 'date +%Y%m%d%H%M%S') }}"
+    cacheable: true
+
+- name: Name the folder this run writes into
+  ansible.builtin.set_fact:
+    grouper_run_stem: "{{ grouper_test_stem }}:run{{ grouper_run_id }}"
+    cacheable: true
+
+# One credential for the whole suite, chosen once here rather than repeated in
+# every target. Basic auth wins when both are configured: the modules reject two
+# credentials at once, and the admin account is the one certain to be able to
+# create the scratch folder. Every target consumes this as module_defaults, so
+# commenting the username and password out switches the suite to JWT wholesale.
+- name: Settle on one credential for every target
+  ansible.builtin.set_fact:
+    grouper_auth: "{{ grouper_auth_common | combine(grouper_auth_credential) }}"
+    cacheable: true
+  vars:
+    grouper_auth_common:
+      ws_url: "{{ grouper_ws_url }}"
+      api_version: "{{ grouper_ws_api_version }}"
+      validate_certs: "{{ grouper_ws_validate_certs }}"
+    grouper_auth_jwt_key: >-
+      {{
+        {'jwt_private_key_path': grouper_ws_jwt_private_key_path}
+        if grouper_ws_jwt_private_key_path is defined
+        else {'jwt_private_key': grouper_ws_jwt_private_key}
+      }}
+    grouper_auth_credential: >-
+      {{
+        {'username': grouper_ws_username, 'password': grouper_ws_password}
+        if grouper_ws_username is defined
+        else {'jwt_prefix': grouper_ws_jwt_prefix} | combine(grouper_auth_jwt_key)
+      }}
+
+- name: Create the scratch folder for this run
+  grouper.ws.stem:
+    name: "{{ grouper_run_stem }}"
+    description: "Scratch folder for an ansible-test run, safe to delete"
+  module_defaults:
+    group/grouper.ws.all: "{{ grouper_auth }}"
+
+- name: Report where this run is writing
+  ansible.builtin.debug:
+    msg: >-
+      This run writes into {{ grouper_run_stem }}. Nothing in this collection
+      deletes Grouper objects, so remove that folder by hand when finished.

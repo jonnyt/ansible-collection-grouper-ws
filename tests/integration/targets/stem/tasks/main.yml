@@ -1,0 +1,150 @@
+---
+- name: grouper.ws.stem
+  module_defaults:
+    # Whichever credential setup_grouper settled on, basic or JWT.
+    group/grouper.ws.all: "{{ grouper_auth }}"
+  vars:
+    stem_name: "{{ grouper_run_stem }}:folder"
+    nested_name: "{{ grouper_run_stem }}:deep:nested:folder"
+  block:
+
+    - name: Create a folder
+      grouper.ws.stem:
+        name: "{{ stem_name }}"
+        display_extension: Folder
+        description: created by the integration suite
+      register: created
+
+    - name: The folder was created
+      ansible.builtin.assert:
+        that:
+          - created is changed
+          - created.result_code == 'SUCCESS_INSERTED'
+          - created.stem.name == stem_name
+          - created.stem.displayExtension == 'Folder'
+          - created.stem.description == 'created by the integration suite'
+        quiet: true
+
+    - name: Create the same folder again
+      grouper.ws.stem:
+        name: "{{ stem_name }}"
+        display_extension: Folder
+        description: created by the integration suite
+      register: repeated
+
+    - name: The repeat was a no-op
+      ansible.builtin.assert:
+        that:
+          - repeated is not changed
+          - repeated.result_code == 'SUCCESS_NO_CHANGES_NEEDED'
+        quiet: true
+
+    - name: Change the description
+      grouper.ws.stem:
+        name: "{{ stem_name }}"
+        description: updated by the integration suite
+      register: updated
+
+    - name: The description was updated and the display name kept
+      ansible.builtin.assert:
+        that:
+          - updated is changed
+          - updated.result_code == 'SUCCESS_UPDATED'
+          - updated.stem.description == 'updated by the integration suite'
+          - updated.stem.displayExtension == 'Folder'
+        quiet: true
+
+    - name: Omitting the description leaves it alone
+      grouper.ws.stem:
+        name: "{{ stem_name }}"
+      register: omitted
+
+    - name: Omitting a managed field is a no-op, not a blanking
+      ansible.builtin.assert:
+        that:
+          - omitted is not changed
+        quiet: true
+
+    - name: Confirm the description survived
+      grouper.ws.stem_info:
+        name: "{{ stem_name }}"
+      register: after_omit
+
+    - name: The description is still the updated one
+      ansible.builtin.assert:
+        that:
+          - after_omit.stems | length == 1
+          - after_omit.stems[0].description == 'updated by the integration suite'
+        quiet: true
+
+    - name: Check mode predicts a change without making it
+      grouper.ws.stem:
+        name: "{{ stem_name }}"
+        description: this must never be written
+      check_mode: true
+      register: checked
+
+    - name: Check mode reported a change
+      ansible.builtin.assert:
+        that:
+          - checked is changed
+        quiet: true
+
+    - name: Read back after check mode
+      grouper.ws.stem_info:
+        name: "{{ stem_name }}"
+      register: after_check
+
+    - name: Check mode wrote nothing
+      ansible.builtin.assert:
+        that:
+          - after_check.stems[0].description == 'updated by the integration suite'
+        quiet: true
+
+    - name: Create a deeply nested folder in one call
+      grouper.ws.stem:
+        name: "{{ nested_name }}"
+        create_parents: true
+      register: nested
+
+    - name: The nested folder and its parents exist
+      ansible.builtin.assert:
+        that:
+          - nested is changed
+          - nested.stem.name == nested_name
+        quiet: true
+
+    - name: The intermediate parent was created too
+      grouper.ws.stem_info:
+        name: "{{ grouper_run_stem }}:deep"
+      register: parent
+
+    - name: The parent is really there
+      ansible.builtin.assert:
+        that:
+          - parent.stems | length == 1
+        quiet: true
+
+    - name: Looking up a folder that does not exist returns nothing
+      grouper.ws.stem_info:
+        name: "{{ grouper_run_stem }}:definitely-not-here"
+      register: missing
+
+    - name: A missing folder is an empty list, not a failure
+      ansible.builtin.assert:
+        that:
+          - missing is succeeded
+          - missing.stems | length == 0
+        quiet: true
+
+    - name: List the folders under this run
+      grouper.ws.stem_info:
+        parent_stem: "{{ grouper_run_stem }}"
+        scope: ONE_LEVEL
+      register: children
+
+    - name: The direct children are listed
+      ansible.builtin.assert:
+        that:
+          - children.stems | map(attribute='name') | select('equalto', stem_name) | list | length == 1
+        quiet: true

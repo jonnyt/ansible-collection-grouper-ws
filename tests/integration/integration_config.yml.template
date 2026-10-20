@@ -1,0 +1,40 @@
+---
+# Copy to tests/integration/integration_config.yml and fill in.
+# That file is gitignored: it holds a real Grouper credential.
+
+grouper_ws_url: https://localhost:1443/grouper-ws
+grouper_ws_username: GrouperSystem
+grouper_ws_password: CHANGEME
+grouper_ws_api_version: v6_0_000
+
+# Local development stacks usually use a self-signed certificate.
+grouper_ws_validate_certs: false
+
+# Optional. Fills in the jwt_auth target, which skips itself without these.
+# Both come from a Grouper local entity's page in the UI: the prefix is shown
+# beside the one-time private key download.
+#
+# The shared setup creates the scratch folder with basic auth whenever the
+# username above is set, so the entity normally only needs privileges inside
+# that folder. To run the suite as the entity alone, comment the username and
+# password out; it then needs CREATE on grouper_test_stem as well.
+#
+# Keep the key outside the repo, or named *.pem / *.key so .gitignore and
+# galaxy.yml's build_ignore both catch it, and chmod 600 it.
+# grouper_ws_jwt_prefix: "jwtUser_YWMyOTE5NGVkZTE4NDU1NzgxYmJhNjM0NjYwNTFlYzQ=_"
+# grouper_ws_jwt_private_key_path: /path/to/entity_private_key.pem
+
+# Folder the tests write into. It is created by the suite. Everything the
+# tests make lands underneath it.
+grouper_test_stem: test:ansible
+
+# The SQL loader test attaches a real loader definition to a test group. It
+# uses Grouper's own database and a query that returns no rows, so the loader
+# daemon has nothing to do. Set to false to skip it.
+grouper_test_sql_loader: true
+
+# The LDAP loader test is skipped unless this names an LDAP connection that
+# actually exists in grouper-loader.properties. Pointing it at a connection
+# that does not exist would leave the loader daemon logging errors on every
+# run, with no way to remove the definition from this collection.
+grouper_test_ldap_server_id: ""

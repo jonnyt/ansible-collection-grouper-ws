@@ -1,0 +1,3 @@
+# Needed by the jwt_* connection options. ansible-core already depends on
+# cryptography, so this pins nothing new for users of the collection.
+cryptography

@@ -1,0 +1,36 @@
+namespace: grouper
+name: ws
+version: 0.1.0
+readme: README.md
+authors:
+  - Jonathon Taylor
+description: >-
+  Manage Internet2 Grouper folders (stems), groups, and loader definitions
+  idempotently through the Grouper Web Services REST API.
+license:
+  - GPL-3.0-or-later
+tags:
+  - grouper
+  - internet2
+  - iam
+  - identity
+  - provisioning
+dependencies: {}
+repository: https://github.com/jonathontaylor/ansible-collection-grouper-ws
+documentation: https://github.com/jonathontaylor/ansible-collection-grouper-ws/blob/main/README.md
+issues: https://github.com/jonathontaylor/ansible-collection-grouper-ws/issues
+build_ignore:
+  - .github
+  - .gitignore
+  - '*.tar.gz'
+  - tests/output
+  # build_ignore is what stops a local credential reaching a published tarball;
+  # .gitignore has no say in what ansible-galaxy packages.
+  - tests/integration/integration_config.yml
+  - '*.pem'
+  - '*.key'
+  # A virtualenv in the repo root is ~22k files. Left in, it breaks the sanity
+  # scan with "Argument list too long" long before it reaches a tarball.
+  - .env
+  - .venv
+  - venv

@@ -1,0 +1,119 @@
+---
+- name: grouper.ws.group
+  module_defaults:
+    # Whichever credential setup_grouper settled on, basic or JWT.
+    group/grouper.ws.all: "{{ grouper_auth }}"
+  vars:
+    test_group_name: "{{ grouper_run_stem }}:groups:people"
+    test_role_name: "{{ grouper_run_stem }}:roles:approver"
+  block:
+
+    - name: Create a group, creating its folder on the way
+      grouper.ws.group:
+        name: "{{ test_group_name }}"
+        display_extension: People
+        description: created by the integration suite
+      register: created
+
+    - name: The group was created empty
+      ansible.builtin.assert:
+        that:
+          - created is changed
+          - created.result_code == 'SUCCESS_INSERTED'
+          - created.group.name == test_group_name
+          - created.group.displayExtension == 'People'
+          - created.group.typeOfGroup == 'group'
+        quiet: true
+
+    - name: Create the same group again
+      grouper.ws.group:
+        name: "{{ test_group_name }}"
+        display_extension: People
+        description: created by the integration suite
+      register: repeated
+
+    - name: The repeat was a no-op
+      ansible.builtin.assert:
+        that:
+          - repeated is not changed
+          - repeated.result_code == 'SUCCESS_NO_CHANGES_NEEDED'
+        quiet: true
+
+    - name: Change the description
+      grouper.ws.group:
+        name: "{{ test_group_name }}"
+        description: updated by the integration suite
+      register: updated
+
+    - name: The description was updated and the display name kept
+      ansible.builtin.assert:
+        that:
+          - updated is changed
+          - updated.result_code == 'SUCCESS_UPDATED'
+          - updated.group.description == 'updated by the integration suite'
+          - updated.group.displayExtension == 'People'
+        quiet: true
+
+    - name: Check mode predicts a change without making it
+      grouper.ws.group:
+        name: "{{ test_group_name }}"
+        description: this must never be written
+      check_mode: true
+      register: checked
+
+    - name: Check mode reported a change
+      ansible.builtin.assert:
+        that:
+          - checked is changed
+        quiet: true
+
+    - name: Read back after check mode
+      grouper.ws.group_info:
+        name: "{{ test_group_name }}"
+      register: after_check
+
+    - name: Check mode wrote nothing
+      ansible.builtin.assert:
+        that:
+          - after_check.groups | length == 1
+          - after_check.groups[0].description == 'updated by the integration suite'
+        quiet: true
+
+    - name: Create a role
+      grouper.ws.group:
+        name: "{{ test_role_name }}"
+        type_of_group: role
+      register: created_role
+
+    - name: The role was created as a role
+      ansible.builtin.assert:
+        that:
+          - created_role is changed
+          - created_role.group.typeOfGroup == 'role'
+        quiet: true
+
+    - name: Looking up a group that does not exist returns nothing
+      grouper.ws.group_info:
+        name: "{{ grouper_run_stem }}:definitely-not-here"
+      register: missing
+
+    - name: A missing group is an empty list, not a failure
+      ansible.builtin.assert:
+        that:
+          - missing is succeeded
+          - missing.groups | length == 0
+        quiet: true
+
+    - name: List only the roles in this run
+      grouper.ws.group_info:
+        stem: "{{ grouper_run_stem }}"
+        scope: ALL_IN_SUBTREE
+        type_of_groups: [role]
+      register: found_roles
+
+    - name: The role is found and the plain group is not
+      ansible.builtin.assert:
+        that:
+          - found_roles.groups | map(attribute='name') | select('equalto', test_role_name) | list | length == 1
+          - found_roles.groups | map(attribute='name') | select('equalto', test_group_name) | list | length == 0
+        quiet: true

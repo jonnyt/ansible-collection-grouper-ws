@@ -1,0 +1,13 @@
+*.pyc
+__pycache__/
+*.tar.gz
+tests/output/
+.venv/
+venv/
+.env/
+.vault_pass
+inventory.local
+tests/integration/integration_config.yml
+# JWT private keys, if one is kept beside the config rather than outside the repo
+*.pem
+*.key

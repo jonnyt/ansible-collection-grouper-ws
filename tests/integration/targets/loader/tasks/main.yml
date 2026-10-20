@@ -1,0 +1,322 @@
+---
+- name: grouper.ws.loader
+  module_defaults:
+    # Whichever credential setup_grouper settled on, basic or JWT.
+    group/grouper.ws.all: "{{ grouper_auth }}"
+  block:
+
+    # ---------------------------------------------------------------- errors
+    # Validation happens before any call to Grouper, so these cost nothing
+    # and cannot leave anything behind.
+
+    - name: A SQL loader given LDAP settings is rejected
+      grouper.ws.loader:
+        group: "{{ grouper_run_stem }}:never-created"
+        type: SQL_SIMPLE
+        ldap:
+          server_id: personLdap
+      register: wrong_suite
+      ignore_errors: true
+
+    - name: The mismatch was reported clearly
+      ansible.builtin.assert:
+        that:
+          - wrong_suite is failed
+          - "'takes its settings under' in wrong_suite.msg"
+        quiet: true
+
+    - name: A SQL loader missing its required settings is rejected
+      grouper.ws.loader:
+        group: "{{ grouper_run_stem }}:never-created"
+        type: SQL_SIMPLE
+        sql:
+          query: select 1
+      register: missing_required
+      ignore_errors: true
+
+    - name: The missing settings were named
+      ansible.builtin.assert:
+        that:
+          - missing_required is failed
+          - "'database' in missing_required.msg"
+          - "'schedule_type' in missing_required.msg"
+        quiet: true
+
+    - name: A cron schedule without a cron expression is rejected
+      grouper.ws.loader:
+        group: "{{ grouper_run_stem }}:never-created"
+        type: SQL_SIMPLE
+        sql:
+          database: grouper
+          query: select 1
+          schedule_type: CRON
+      register: no_cron
+      ignore_errors: true
+
+    - name: The missing cron expression was reported
+      ansible.builtin.assert:
+        that:
+          - no_cron is failed
+          - "'quartz_cron' in no_cron.msg"
+        quiet: true
+
+    # ------------------------------------------------------------ SQL loader
+
+    - name: SQL loader tests
+      when: grouper_test_sql_loader | bool
+      vars:
+        sql_group: "{{ grouper_run_stem }}:loaders:sql"
+        # Grouper's own database, and a query that can never return a row, so
+        # the loader daemon has nothing to do when it picks this job up.
+        noop_query: >-
+          select subject_id as SUBJECT_ID from grouper_members where 1 = 0
+      block:
+
+        - name: Create the group the loader will drive
+          grouper.ws.group:
+            name: "{{ sql_group }}"
+            description: SQL loader target, membership owned by Grouper
+
+        - name: Attach a SQL_SIMPLE loader
+          grouper.ws.loader:
+            group: "{{ sql_group }}"
+            type: SQL_SIMPLE
+            sql:
+              database: grouper
+              query: "{{ noop_query }}"
+              schedule_type: START_TO_START_INTERVAL
+              interval_seconds: 86400
+          register: sql_created
+
+        - name: The loader was attached
+          ansible.builtin.assert:
+            that:
+              - sql_created is changed
+              - sql_created.marker == 'etc:legacy:attribute:legacyGroupType_grouperLoader'
+              - >-
+                sql_created.loader['etc:legacy:attribute:legacyAttribute_grouperLoaderType']
+                == 'SQL_SIMPLE'
+            quiet: true
+
+        - name: Attach the same loader again
+          grouper.ws.loader:
+            group: "{{ sql_group }}"
+            type: SQL_SIMPLE
+            sql:
+              database: grouper
+              query: "{{ noop_query }}"
+              schedule_type: START_TO_START_INTERVAL
+              interval_seconds: 86400
+          register: sql_repeated
+
+        - name: The repeat was a no-op
+          ansible.builtin.assert:
+            that:
+              - sql_repeated is not changed
+              - sql_repeated.changed_attributes | length == 0
+            quiet: true
+
+        - name: Change only the interval
+          grouper.ws.loader:
+            group: "{{ sql_group }}"
+            type: SQL_SIMPLE
+            sql:
+              database: grouper
+              query: "{{ noop_query }}"
+              schedule_type: START_TO_START_INTERVAL
+              interval_seconds: 43200
+          register: sql_updated
+
+        - name: Only the interval attribute was rewritten
+          ansible.builtin.assert:
+            that:
+              - sql_updated is changed
+              - sql_updated.changed_attributes == [
+                  'etc:legacy:attribute:legacyAttribute_grouperLoaderIntervalSeconds']
+            quiet: true
+
+        - name: Check mode predicts a change without making it
+          grouper.ws.loader:
+            group: "{{ sql_group }}"
+            type: SQL_SIMPLE
+            sql:
+              database: grouper
+              query: select 'never written' as SUBJECT_ID
+              schedule_type: START_TO_START_INTERVAL
+              interval_seconds: 43200
+          check_mode: true
+          register: sql_checked
+
+        - name: Check mode reported the change
+          ansible.builtin.assert:
+            that:
+              - sql_checked is changed
+            quiet: true
+
+        - name: Re-run the real definition to prove check mode wrote nothing
+          grouper.ws.loader:
+            group: "{{ sql_group }}"
+            type: SQL_SIMPLE
+            sql:
+              database: grouper
+              query: "{{ noop_query }}"
+              schedule_type: START_TO_START_INTERVAL
+              interval_seconds: 43200
+          register: sql_after_check
+
+        - name: Nothing had changed underneath
+          ansible.builtin.assert:
+            that:
+              - sql_after_check is not changed
+            quiet: true
+
+        - name: Switch to a cron schedule and purge the stale interval
+          grouper.ws.loader:
+            group: "{{ sql_group }}"
+            type: SQL_SIMPLE
+            purge_unmanaged: true
+            sql:
+              database: grouper
+              query: "{{ noop_query }}"
+              schedule_type: CRON
+              quartz_cron: "0 0 4 * * ?"
+          register: sql_purged
+
+        - name: The interval attribute was removed
+          ansible.builtin.assert:
+            that:
+              - sql_purged is changed
+              - sql_purged.removed_attributes == [
+                  'etc:legacy:attribute:legacyAttribute_grouperLoaderIntervalSeconds']
+            quiet: true
+
+        - name: The purge is itself idempotent
+          grouper.ws.loader:
+            group: "{{ sql_group }}"
+            type: SQL_SIMPLE
+            purge_unmanaged: true
+            sql:
+              database: grouper
+              query: "{{ noop_query }}"
+              schedule_type: CRON
+              quartz_cron: "0 0 4 * * ?"
+          register: sql_purged_again
+
+        - name: Nothing left to purge
+          ansible.builtin.assert:
+            that:
+              - sql_purged_again is not changed
+              - sql_purged_again.removed_attributes | length == 0
+            quiet: true
+
+        - name: Create the group that will hold a SQL_GROUP_LIST definition
+          grouper.ws.group:
+            name: "{{ grouper_run_stem }}:loaders:sqllist"
+            description: SQL_GROUP_LIST definition holder
+
+        - name: A SQL_GROUP_LIST loader accepts a group query
+          grouper.ws.loader:
+            group: "{{ grouper_run_stem }}:loaders:sqllist"
+            type: SQL_GROUP_LIST
+            sql:
+              database: grouper
+              schedule_type: CRON
+              quartz_cron: "0 0 4 * * ?"
+              groups_like: "{{ grouper_run_stem }}:loaders:sqllist:%"
+              query: >-
+                select subject_id as SUBJECT_ID, 'x' as GROUP_NAME
+                from grouper_members where 1 = 0
+              group_query: >-
+                select 'x' as GROUP_NAME from grouper_members where 1 = 0
+          register: sql_list
+
+        - name: The group query was stored, which SQL_SIMPLE would have rejected
+          ansible.builtin.assert:
+            that:
+              - sql_list is changed
+              - >-
+                'etc:legacy:attribute:legacyAttribute_grouperLoaderGroupQuery'
+                in sql_list.loader
+            quiet: true
+
+        - name: The SQL_GROUP_LIST definition is idempotent
+          grouper.ws.loader:
+            group: "{{ grouper_run_stem }}:loaders:sqllist"
+            type: SQL_GROUP_LIST
+            sql:
+              database: grouper
+              schedule_type: CRON
+              quartz_cron: "0 0 4 * * ?"
+              groups_like: "{{ grouper_run_stem }}:loaders:sqllist:%"
+              query: >-
+                select subject_id as SUBJECT_ID, 'x' as GROUP_NAME
+                from grouper_members where 1 = 0
+              group_query: >-
+                select 'x' as GROUP_NAME from grouper_members where 1 = 0
+          register: sql_list_again
+
+        - name: The repeat was a no-op
+          ansible.builtin.assert:
+            that:
+              - sql_list_again is not changed
+            quiet: true
+
+    # ----------------------------------------------------------- LDAP loader
+
+    - name: LDAP loader tests
+      when: grouper_test_ldap_server_id | length > 0
+      vars:
+        ldap_group: "{{ grouper_run_stem }}:loaders:ldap"
+      block:
+
+        - name: Create the group the LDAP loader will drive
+          grouper.ws.group:
+            name: "{{ ldap_group }}"
+            description: LDAP loader target, membership owned by Grouper
+
+        - name: Attach an LDAP_SIMPLE loader
+          grouper.ws.loader:
+            group: "{{ ldap_group }}"
+            type: LDAP_SIMPLE
+            ldap:
+              server_id: "{{ grouper_test_ldap_server_id }}"
+              quartz_cron: "0 0 4 * * ?"
+              filter: "(cn=ansible-integration-nothing-matches)"
+              subject_attribute: hasMember
+              subject_id_type: subjectId
+          register: ldap_created
+
+        - name: The LDAP loader was attached under the modern framework
+          ansible.builtin.assert:
+            that:
+              - ldap_created is changed
+              - ldap_created.marker == 'etc:attribute:loaderLdap:grouperLoaderLdap'
+              - >-
+                ldap_created.loader['etc:attribute:loaderLdap:grouperLoaderLdapType']
+                == 'LDAP_SIMPLE'
+            quiet: true
+
+        - name: Attach the same LDAP loader again
+          grouper.ws.loader:
+            group: "{{ ldap_group }}"
+            type: LDAP_SIMPLE
+            ldap:
+              server_id: "{{ grouper_test_ldap_server_id }}"
+              quartz_cron: "0 0 4 * * ?"
+              filter: "(cn=ansible-integration-nothing-matches)"
+              subject_attribute: hasMember
+              subject_id_type: subjectId
+          register: ldap_repeated
+
+        - name: The repeat was a no-op
+          ansible.builtin.assert:
+            that:
+              - ldap_repeated is not changed
+            quiet: true
+
+    - name: Note when the LDAP loader tests were skipped
+      ansible.builtin.debug:
+        msg: >-
+          LDAP loader tests skipped. Set grouper_test_ldap_server_id to an
+          LDAP connection defined in grouper-loader.properties to run them.
+      when: grouper_test_ldap_server_id | length == 0

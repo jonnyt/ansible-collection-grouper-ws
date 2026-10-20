@@ -1,0 +1,6 @@
+---
+grouper_ws_api_version: v6_0_000
+grouper_ws_validate_certs: true
+grouper_test_stem: 'test:ansible'
+grouper_test_sql_loader: true
+grouper_test_ldap_server_id: ''
