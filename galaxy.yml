@@ -16,9 +16,9 @@ tags:
   - identity
   - provisioning
 dependencies: {}
-repository: https://github.com/jonathontaylor/ansible-collection-grouper-ws
-documentation: https://github.com/jonathontaylor/ansible-collection-grouper-ws/blob/main/README.md
-issues: https://github.com/jonathontaylor/ansible-collection-grouper-ws/issues
+repository: https://github.com/jonnyt/ansible-collection-grouper-ws
+documentation: https://github.com/jonnyt/ansible-collection-grouper-ws/blob/main/README.md
+issues: https://github.com/jonnyt/ansible-collection-grouper-ws/issues
 build_ignore:
   - .github
   - .gitignore
