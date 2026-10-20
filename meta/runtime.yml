@@ -6,5 +6,6 @@ action_groups:
     - stem
     - group
     - loader
+    - jexl_script
     - stem_info
     - group_info

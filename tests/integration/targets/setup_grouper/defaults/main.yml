@@ -4,3 +4,4 @@ grouper_ws_validate_certs: true
 grouper_test_stem: 'test:ansible'
 grouper_test_sql_loader: true
 grouper_test_ldap_server_id: ''
+grouper_test_jexl_script: true

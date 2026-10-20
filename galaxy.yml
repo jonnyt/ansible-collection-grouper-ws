@@ -5,8 +5,9 @@ readme: README.md
 authors:
   - Jonathon Taylor
 description: >-
-  Manage Internet2 Grouper folders (stems), groups, and loader definitions
-  idempotently through the Grouper Web Services REST API.
+  Manage Internet2 Grouper folders (stems), groups, loader definitions and
+  JEXL scripted (ABAC) groups idempotently through the Grouper Web Services
+  REST API.
 license:
   - GPL-3.0-or-later
 tags:

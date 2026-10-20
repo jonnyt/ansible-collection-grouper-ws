@@ -1,8 +1,8 @@
 # Grouper Ansible Collection (`grouper.ws`)
 
 Manage [Internet2 Grouper](https://www.internet2.edu/products-services/trust-identity/grouper/)
-folders, groups and loader definitions idempotently from Ansible, through the
-Grouper Web Services (`grouper-ws`) REST API.
+folders, groups, loader definitions and JEXL scripted groups idempotently from
+Ansible, through the Grouper Web Services (`grouper-ws`) REST API.
 
 ## What this collection does, and deliberately does not, do
 
@@ -11,6 +11,7 @@ Grouper Web Services (`grouper-ws`) REST API.
 | `grouper.ws.stem` | Create or update a folder (a *stem*) |
 | `grouper.ws.group` | Create or update a group, role or entity |
 | `grouper.ws.loader` | Attach or update a SQL or LDAP loader definition on a group |
+| `grouper.ws.jexl_script` | Attach or update a JEXL script (ABAC) on a group |
 | `grouper.ws.stem_info` | Look up folders |
 | `grouper.ws.group_info` | Look up groups |
 
@@ -340,6 +341,60 @@ If your site has retuned `grouper.attribute.rootStem` or
 `legacyAttribute.baseStem`, override `attribute_root_stem` or
 `legacy_attribute_stem` to match.
 
+## JEXL scripted groups
+
+Grouper can compute a group's membership from a JEXL script evaluated against
+every entity — its attribute based access control. `grouper.ws.jexl_script`
+attaches that script to a group:
+
+```yaml
+- name: Create the group the script will drive
+  grouper.ws.group:
+    name: app:vpn:groups:allowed
+    description: Staff who are not locked out, computed by Grouper
+
+- name: Compute membership from other groups
+  grouper.ws.jexl_script:
+    group: app:vpn:groups:allowed
+    script: >-
+      ${entity.memberOf('ref:staff') && !entity.memberOf('ref:lockout')}
+```
+
+As with loaders, the group must exist first, and the module never touches
+membership itself: Grouper's JEXL daemons own it.
+
+**No scheduling step.** Unlike a SQL or LDAP loader, a script takes effect
+without a daemon restart. The `grouperLoaderJexlScriptIncremental` change log
+consumer, every minute by default, recalculates a group as soon as its script
+changes, and the daily `grouperLoaderJexlScriptFullSync` job rescans them all.
+
+**One loader per group.** Grouper drives a group from one loader at a time. The
+UI swaps them by removing the old one, which this collection never does, so
+`jexl_script` refuses a group that already has a SQL or LDAP loader, and
+`loader` refuses a group that already has a script. Remove the old definition
+in the UI first.
+
+**`subject_source_ids`** chooses which subject sources the script is evaluated
+over. Omit it to leave the stored value alone, or pass `[]` to go back to the
+global default sources. Grouper only honours it when per group overrides are
+enabled and every id is in its list of available sources; otherwise it quietly
+uses the defaults.
+
+**The UI's checks do not apply.** The Loader tab analyses a script, shows how
+many members it would produce, and enforces configured maximum membership
+sizes. All of that is UI only, and Grouper accepts almost any script written
+through web services. A script that does not parse is only reported later, by
+the daemon. Try a new script in the UI before rolling it out.
+
+Writing a script needs permission to assign the attributes under
+`etc:attribute:abacJexlScript`, which usually means a wheel group member. The
+group carries the marker
+`etc:attribute:abacJexlScript:grouperJexlScriptMarker`, and the script is an
+attribute assigned *on that marker assignment*, the same shape as an LDAP
+loader. That stem comes from `grouper.rootStemForBuiltinObjects`, not
+`grouper.attribute.rootStem`; override `jexl_script_stem` if your site has
+retuned it.
+
 ## Acting as another subject
 
 Where the authenticated account is permitted to, requests can be made on behalf
@@ -373,7 +428,7 @@ Integration tests do. Copy the template and fill it in:
 ```bash
 cp tests/integration/integration_config.yml.template \
    tests/integration/integration_config.yml
-ansible-test integration --python 3.14 stem group loader
+ansible-test integration --python 3.14 stem group loader jexl_script
 ```
 
 Each run writes into a fresh, timestamped folder under `grouper_test_stem`.
@@ -384,6 +439,10 @@ The LDAP loader target is skipped unless `grouper_test_ldap_server_id` names a
 connection that really exists in `grouper-loader.properties`. Pointing it at one
 that does not would leave the loader daemon logging errors on every run, with
 no way to remove the definition using this collection.
+
+The JEXL script target needs an account that can assign the
+`etc:attribute:abacJexlScript` attributes. Set `grouper_test_jexl_script: false`
+to skip it.
 
 ## Licence
 

@@ -38,3 +38,9 @@ grouper_test_sql_loader: true
 # that does not exist would leave the loader daemon logging errors on every
 # run, with no way to remove the definition from this collection.
 grouper_test_ldap_server_id: ""
+
+# The JEXL script test attaches a scripted (ABAC) definition to a test group.
+# The script refers only to an empty group created by the test, so the JEXL
+# daemons compute an empty membership. The account needs privileges on the
+# etc:attribute:abacJexlScript attributes, usually wheel. Set to false to skip.
+grouper_test_jexl_script: true

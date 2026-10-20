@@ -275,6 +275,14 @@ options:
         loader attributes live.
     type: str
     default: 'etc:legacy:attribute'
+  jexl_script_stem:
+    description:
+      - Stem holding Grouper's JEXL scripted group attributes, built from
+        C(grouper.rootStemForBuiltinObjects).
+      - Used only to refuse a group that already has a JEXL script, see
+        M(grouper.ws.jexl_script).
+    type: str
+    default: 'etc:attribute:abacJexlScript'
 extends_documentation_fragment:
   - grouper.ws.grouper
 attributes:
@@ -414,6 +422,15 @@ from ansible_collections.grouper.ws.plugins.module_utils.loader_spec import (
     is_sql,
     validate_options,
 )
+from ansible_collections.grouper.ws.plugins.module_utils.jexl_spec import (
+    DEFAULT_JEXL_SCRIPT_STEM,
+    JexlNaming,
+)
+from ansible_collections.grouper.ws.plugins.module_utils.marker_assign import (
+    build_batch,
+    find_markers,
+    read_current,
+)
 
 SQL_SUBOPTIONS = dict(
     database=dict(type='str'),
@@ -461,80 +478,6 @@ LDAP_SUBOPTIONS = dict(
 )
 
 
-def read_current(client, group, marker_name):
-    """Return (marker assignment, {attribute def name: value}) for the group.
-
-    The marker is assigned to the group itself; every setting is assigned on
-    the marker assignment, so settings are matched by ownerAttributeAssignId.
-    """
-    envelope = client.post(
-        'attributeAssignments', 'WsRestGetAttributeAssignmentsRequest', {
-            'attributeAssignType': 'group',
-            'wsOwnerGroupLookups': [{'groupName': group}],
-            'wsAttributeDefNameLookups': [{'name': marker_name}],
-            'includeAssignmentsOnAssignments': 'T',
-        })
-
-    assigns = envelope.get('wsAttributeAssigns') or []
-
-    marker = None
-    for assign in assigns:
-        if (assign.get('attributeAssignType') == 'group'
-                and assign.get('attributeDefNameName') == marker_name
-                and assign.get('ownerGroupName') == group):
-            marker = assign
-            break
-
-    if marker is None:
-        return None, {}
-
-    values = {}
-    for assign in assigns:
-        if assign.get('ownerAttributeAssignId') != marker.get('id'):
-            continue
-        name = assign.get('attributeDefNameName')
-        if not name:
-            continue
-        assign_values = assign.get('wsAttributeAssignValues') or []
-        values[name] = assign_values[0].get('valueSystem', '') if assign_values else ''
-    return marker, values
-
-
-def build_batch(group, marker_name, to_write, to_remove):
-    """Build assignAttributesBatch entries.
-
-    Entry 0 assigns the marker to the group and every other entry references
-    it by batchIndex, so a brand new loader and an update to an existing one
-    take exactly the same shape and a single round trip.
-    """
-    entries = [{
-        'wsOwnerGroupLookup': {'groupName': group},
-        'attributeAssignType': 'group',
-        'attributeAssignOperation': 'assign_attr',
-        'wsAttributeDefNameLookup': {'name': marker_name},
-    }]
-
-    for name in sorted(to_write):
-        entries.append({
-            'wsOwnerAttributeAssignLookup': {'batchIndex': '0'},
-            'attributeAssignType': 'group_asgn',
-            'attributeAssignOperation': 'assign_attr',
-            'wsAttributeDefNameLookup': {'name': name},
-            'attributeAssignValueOperation': 'replace_values',
-            'values': [{'valueSystem': to_write[name]}],
-        })
-
-    for name in sorted(to_remove):
-        entries.append({
-            'wsOwnerAttributeAssignLookup': {'batchIndex': '0'},
-            'attributeAssignType': 'group_asgn',
-            'attributeAssignOperation': 'remove_attr',
-            'wsAttributeDefNameLookup': {'name': name},
-        })
-
-    return entries
-
-
 def main():
     module = AnsibleModule(
         argument_spec=grouper_argument_spec(
@@ -545,6 +488,7 @@ def main():
             purge_unmanaged=dict(type='bool', default=False),
             attribute_root_stem=dict(type='str', default='etc:attribute'),
             legacy_attribute_stem=dict(type='str', default='etc:legacy:attribute'),
+            jexl_script_stem=dict(type='str', default=DEFAULT_JEXL_SCRIPT_STEM),
         ),
         mutually_exclusive=GROUPER_MUTUALLY_EXCLUSIVE + [('sql', 'ldap')],
         required_together=GROUPER_REQUIRED_TOGETHER,
@@ -585,6 +529,14 @@ def main():
     client = GrouperClient(module)
 
     try:
+        jexl_marker = JexlNaming(params['jexl_script_stem']).marker_name
+        if find_markers(client, group, [jexl_marker]):
+            module.fail_json(
+                msg='Group %s already has a JEXL script (%s). A group is driven '
+                    'by one loader at a time, and this collection never removes '
+                    'a definition, so remove the script in the Grouper UI first.'
+                    % (group, jexl_marker))
+
         marker, current = read_current(client, group, naming.marker_name)
 
         to_write = {name: value for name, value in desired.items()

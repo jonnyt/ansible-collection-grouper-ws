@@ -135,6 +135,45 @@ SSH, a container exec, or a daemon restart handler). The user was offered that
 and **chose to leave it documented only**, keeping the collection purely
 WS-based with no extra dependencies. Do not reopen this without being asked.
 
+### JEXL scripted (ABAC) groups
+
+`grouper.ws.jexl_script`. Source of truth: `abac/GrouperAbac.java` (names),
+`misc/GrouperCheckConfig.java` (attribute defs, ~2690 and ~4950), the UI save
+in `UiV2GrouperLoader.java` (~1664), and the daemons
+`GrouperLoaderJexlScriptFullSync` / `GrouperLoaderJexlScriptIncremental`.
+
+- **Not a `GrouperLoaderType`**, which is why it is a separate module and not
+  a sixth `loader` type. The UI calls it loader type `JEXL_SCRIPT`, but that
+  string exists only in the UI.
+- Same shape as LDAP: marker `grouperJexlScriptMarker` (def assignToGroup,
+  marker) on the group, and `grouperJexlScriptJexlScript` /
+  `grouperJexlScriptSubjectSourceIds` (def assignToGroupAssn, string, scoped
+  to the marker) as `group_asgn` on it. `marker_assign.py` serves all three.
+- The stem is `grouper.rootStemForBuiltinObjects` + `:attribute:abacJexlScript`,
+  **not** `grouper.attribute.rootStem`. Hence `jexl_script_stem` is a separate
+  option rather than reusing `attribute_root_stem`.
+- `grouperJexlScriptJexlLastGroupSync` is written by the daemons. Never manage it.
+- **No scheduling gap.** The incremental consumer (cron `0 * * * * ?`)
+  recalculates on `ATTRIBUTE_ASSIGN_VALUE_ADD/DELETE` of the script or
+  source-id attribute, and the full sync scans every marker. The loader
+  "restart the daemon" caveat does not apply here.
+- **Grouper validates nothing on write.** `GrouperAbac.validScript()` returns
+  null before any check (the double-quote check after it is dead code), and
+  `analyzeJexlScript()` trims and accepts the script with or without `${…}`.
+  So the module only rejects a blank script. Do not add syntax checks that
+  Grouper does not make.
+- Source ids: the UI stores them sorted and joined with `", "` (TreeSet), and
+  removes the attribute when they equal the global default.
+  `effectiveSubjectSourceIds()` silently falls back to the defaults unless
+  override is allowed and each id is available, and always strips
+  `g:isa`/`g:gsa`. The module normalises before comparing.
+- **One loader per group.** The UI removes the other marker when switching.
+  The user chose to *refuse* instead, since we never delete. `jexl_script`
+  checks for SQL/LDAP markers, and `loader` checks for the JEXL marker, each
+  with a single `find_markers` call.
+- WS bypasses UI-only checks: script analysis and the
+  `maxAbacMembershipSizeForSubject` tiers.
+
 ### JWT authentication, verified from source
 
 Source of truth:
@@ -225,7 +264,7 @@ list too long` — which names the sanity venv's python, not the copied one, so 
 reads like a broken install rather than a file-count problem. Same for
 `tests/output` left behind by a previous run.
 
-Both must stay green: 24 sanity tests, 111 unit tests as of the rename to `grouper.ws`.
+Both must stay green: 24 sanity tests, 140 unit tests as of `grouper.ws.jexl_script`.
 Unit tests need `pytest`, `pytest-xdist`, `pytest-mock` and `cryptography` in
 the venv (`tests/unit/requirements.txt` declares the last one).
 
@@ -234,6 +273,17 @@ stack: stem 28 ok, group 22 ok, loader 33 ok, 0 failed. The loader
 structure was additionally verified by querying the assignments back
 directly, confirming the marker sits on the group and every setting is a
 `group_asgn` assignment owned by it.
+
+`jexl_script` verified green against the same stack, run as the JWT entity:
+38 ok, 10 changed, 0 failed, 3 deliberately ignored (blank script, and the
+conflict refusal in each direction). Read back directly: marker on the group,
+script as a `group_asgn` owned by it, both `enabled=T`.
+
+**The user's stack has `veto.group.unique.extension` enabled**, so a group
+*extension* must be unique site-wide, not just within its folder. Targets that
+create fixed extensions (`group`, `jexl_script`: `source`, `target`,
+`sqlloaded`) fail with `HookVeto` on a second run until earlier run folders
+are deleted. That is the environment, not a regression.
 
 Integration tests need a live Grouper and a filled-in
 `tests/integration/integration_config.yml` (gitignored). They write into a

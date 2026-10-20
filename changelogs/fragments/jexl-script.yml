@@ -1,0 +1,6 @@
+---
+minor_changes:
+  - loader - refuse a group that already has a JEXL script. Grouper drives a
+    group from one loader at a time, and this collection never removes a
+    definition, so the conflict is reported instead. The new
+    ``jexl_script_stem`` option names where the script attributes live.

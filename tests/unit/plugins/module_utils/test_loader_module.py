@@ -6,7 +6,7 @@ from __future__ import absolute_import, division, print_function
 
 __metaclass__ = type
 
-from ansible_collections.grouper.ws.plugins.modules.loader import (
+from ansible_collections.grouper.ws.plugins.module_utils.marker_assign import (
     build_batch,
     read_current,
 )

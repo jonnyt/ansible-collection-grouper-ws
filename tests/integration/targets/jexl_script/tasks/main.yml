@@ -1,0 +1,248 @@
+---
+- name: grouper.ws.jexl_script
+  module_defaults:
+    # Whichever credential setup_grouper settled on, basic or JWT.
+    group/grouper.ws.all: "{{ grouper_auth }}"
+  block:
+
+    # ---------------------------------------------------------------- errors
+    # Validation happens before any call to Grouper, so this costs nothing
+    # and cannot leave anything behind.
+
+    - name: A blank script is rejected
+      grouper.ws.jexl_script:
+        group: "{{ grouper_run_stem }}:never-created"
+        script: "   "
+      register: jexl_blank
+      ignore_errors: true
+
+    - name: The blank script was reported clearly
+      ansible.builtin.assert:
+        that:
+          - jexl_blank is failed
+          - "'must not be blank' in jexl_blank.msg"
+        quiet: true
+
+    # ---------------------------------------------------------- JEXL script
+
+    - name: JEXL script tests
+      when: grouper_test_jexl_script | bool
+      vars:
+        jexl_source_group: "{{ grouper_run_stem }}:jexl:source"
+        jexl_target_group: "{{ grouper_run_stem }}:jexl:target"
+        jexl_marker: etc:attribute:abacJexlScript:grouperJexlScriptMarker
+        jexl_script_attr: etc:attribute:abacJexlScript:grouperJexlScriptJexlScript
+        jexl_sources_attr: etc:attribute:abacJexlScript:grouperJexlScriptSubjectSourceIds
+        # The source group stays empty, so the daemon computes an empty
+        # membership and the run leaves nothing behind but its folder.
+        jexl_rule: "${entity.memberOf('{{ jexl_source_group }}')}"
+        jexl_rule_changed: >-
+          ${entity.memberOf('{{ jexl_source_group }}') && !entity.memberOf('{{ jexl_source_group }}')}
+      block:
+
+        - name: Create the empty group the script refers to
+          grouper.ws.group:
+            name: "{{ jexl_source_group }}"
+            description: Referenced by a JEXL script test, deliberately empty
+
+        - name: Create the group the script will drive
+          grouper.ws.group:
+            name: "{{ jexl_target_group }}"
+            description: JEXL script target, membership owned by Grouper
+
+        - name: Attach a JEXL script
+          grouper.ws.jexl_script:
+            group: "{{ jexl_target_group }}"
+            script: "{{ jexl_rule }}"
+          register: jexl_created
+
+        - name: The script was attached under the marker
+          ansible.builtin.assert:
+            that:
+              - jexl_created is changed
+              - jexl_created.marker == jexl_marker
+              - jexl_created.jexl_script[jexl_script_attr] == jexl_rule
+            quiet: true
+
+        - name: Attach the same script again
+          grouper.ws.jexl_script:
+            group: "{{ jexl_target_group }}"
+            script: "{{ jexl_rule }}"
+          register: jexl_repeated
+
+        - name: The repeat was a no-op
+          ansible.builtin.assert:
+            that:
+              - jexl_repeated is not changed
+              - jexl_repeated.changed_attributes | length == 0
+            quiet: true
+
+        - name: Check mode predicts a script change without making it
+          grouper.ws.jexl_script:
+            group: "{{ jexl_target_group }}"
+            script: "{{ jexl_rule_changed }}"
+          check_mode: true
+          register: jexl_checked
+
+        - name: Check mode reported the change
+          ansible.builtin.assert:
+            that:
+              - jexl_checked is changed
+            quiet: true
+
+        - name: Re-run the real script to prove check mode wrote nothing
+          grouper.ws.jexl_script:
+            group: "{{ jexl_target_group }}"
+            script: "{{ jexl_rule }}"
+          register: jexl_after_check
+
+        - name: Nothing had changed underneath
+          ansible.builtin.assert:
+            that:
+              - jexl_after_check is not changed
+            quiet: true
+
+        - name: Change the script
+          grouper.ws.jexl_script:
+            group: "{{ jexl_target_group }}"
+            script: "{{ jexl_rule_changed }}"
+          register: jexl_updated
+
+        - name: Only the script attribute was rewritten
+          ansible.builtin.assert:
+            that:
+              - jexl_updated is changed
+              - jexl_updated.changed_attributes == [jexl_script_attr]
+            quiet: true
+
+        # Grouper only stores this id; an id it does not know falls back to the
+        # global defaults when evaluated, so a made up one is harmless here.
+        - name: Restrict the script to one subject source
+          grouper.ws.jexl_script:
+            group: "{{ jexl_target_group }}"
+            script: "{{ jexl_rule_changed }}"
+            subject_source_ids: [ansible-integration-source]
+          register: jexl_sources_set
+
+        - name: The source ids were written
+          ansible.builtin.assert:
+            that:
+              - jexl_sources_set is changed
+              - jexl_sources_set.changed_attributes == [jexl_sources_attr]
+            quiet: true
+
+        - name: Set the same source ids again
+          grouper.ws.jexl_script:
+            group: "{{ jexl_target_group }}"
+            script: "{{ jexl_rule_changed }}"
+            subject_source_ids: [ansible-integration-source]
+          register: jexl_sources_repeated
+
+        - name: The source ids are idempotent
+          ansible.builtin.assert:
+            that:
+              - jexl_sources_repeated is not changed
+            quiet: true
+
+        - name: Omitting the source ids leaves them alone
+          grouper.ws.jexl_script:
+            group: "{{ jexl_target_group }}"
+            script: "{{ jexl_rule_changed }}"
+          register: jexl_sources_omitted
+
+        - name: Nothing was removed
+          ansible.builtin.assert:
+            that:
+              - jexl_sources_omitted is not changed
+              - jexl_sources_omitted.removed_attributes | length == 0
+            quiet: true
+
+        - name: An empty list returns to the global default sources
+          grouper.ws.jexl_script:
+            group: "{{ jexl_target_group }}"
+            script: "{{ jexl_rule_changed }}"
+            subject_source_ids: []
+          register: jexl_sources_cleared
+
+        - name: The source ids attribute was removed
+          ansible.builtin.assert:
+            that:
+              - jexl_sources_cleared is changed
+              - jexl_sources_cleared.removed_attributes == [jexl_sources_attr]
+            quiet: true
+
+        - name: Clearing again is a no-op
+          grouper.ws.jexl_script:
+            group: "{{ jexl_target_group }}"
+            script: "{{ jexl_rule_changed }}"
+            subject_source_ids: []
+          register: jexl_sources_cleared_again
+
+        - name: Nothing left to remove
+          ansible.builtin.assert:
+            that:
+              - jexl_sources_cleared_again is not changed
+            quiet: true
+
+        - name: A loader cannot be attached to a group with a script
+          grouper.ws.loader:
+            group: "{{ jexl_target_group }}"
+            type: SQL_SIMPLE
+            sql:
+              database: grouper
+              query: select subject_id as SUBJECT_ID from grouper_members where 1 = 0
+              schedule_type: START_TO_START_INTERVAL
+              interval_seconds: 86400
+          register: jexl_loader_refused
+          ignore_errors: true
+
+        - name: The loader was refused because of the script
+          ansible.builtin.assert:
+            that:
+              - jexl_loader_refused is failed
+              - "'already has a JEXL script' in jexl_loader_refused.msg"
+            quiet: true
+
+        - name: Conflict with an existing SQL loader
+          when: grouper_test_sql_loader | bool
+          vars:
+            jexl_loader_group: "{{ grouper_run_stem }}:jexl:sqlloaded"
+          block:
+
+            - name: Create a group driven by a SQL loader
+              grouper.ws.group:
+                name: "{{ jexl_loader_group }}"
+                description: SQL loader target, used to test the JEXL conflict check
+
+            - name: Attach the SQL loader
+              grouper.ws.loader:
+                group: "{{ jexl_loader_group }}"
+                type: SQL_SIMPLE
+                sql:
+                  database: grouper
+                  query: select subject_id as SUBJECT_ID from grouper_members where 1 = 0
+                  schedule_type: START_TO_START_INTERVAL
+                  interval_seconds: 86400
+
+            - name: A script cannot be attached to a loader driven group
+              grouper.ws.jexl_script:
+                group: "{{ jexl_loader_group }}"
+                script: "{{ jexl_rule }}"
+              register: jexl_refused
+              ignore_errors: true
+
+            - name: The script was refused, naming the loader
+              ansible.builtin.assert:
+                that:
+                  - jexl_refused is failed
+                  - "'already has a loader definition' in jexl_refused.msg"
+                  - "'legacyGroupType_grouperLoader' in jexl_refused.msg"
+                quiet: true
+
+    - name: Note when the JEXL script tests were skipped
+      ansible.builtin.debug:
+        msg: >-
+          JEXL script tests skipped. Set grouper_test_jexl_script to true, with
+          an account that can assign the etc:attribute:abacJexlScript
+          attributes, to run them.
+      when: not (grouper_test_jexl_script | bool)
