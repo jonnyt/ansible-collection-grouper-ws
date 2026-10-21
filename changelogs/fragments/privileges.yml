@@ -1,0 +1,11 @@
+---
+major_changes:
+  - privilege - new module setting exactly which privileges one subject holds
+    directly on a folder or group. Unlisted privileges are revoked for that
+    subject only.
+  - inherited_privilege - new module managing the rules that grant privileges
+    on folders, groups and attribute definitions created inside a folder. Rules
+    are created or updated in place, never removed.
+minor_changes:
+  - Grouper failures that arrive as a whole Java stack trace now report each
+    underlying reason once, instead of the full trace.

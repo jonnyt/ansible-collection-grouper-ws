@@ -365,5 +365,17 @@ class TestCondenseStackTrace:
     def test_plain_message_is_left_alone(self):
         assert _condense_stack_trace('just a message') == 'just a message'
 
+    def test_one_reason_wrapped_in_several_exceptions_is_said_once(self):
+        trace = (
+            "clientVersion: 6.0.0, request summary\n"
+            "\tat Foo.bar(Foo.java:1)\n"
+            "Caused by: a.UnableToPerformException: GrouperAll can't get a manage privilege.\n"
+            "Caused by: a.GrantPrivilegeException: GrouperAll can't get a manage privilege.\n"
+            "Caused by: java.lang.IllegalStateException: the real reason\n"
+        )
+        condensed = _condense_stack_trace(trace)
+        assert condensed.count("can't get a manage privilege") == 1
+        assert 'the real reason' in condensed
+
     def test_none_is_passed_through(self):
         assert _condense_stack_trace(None) is None

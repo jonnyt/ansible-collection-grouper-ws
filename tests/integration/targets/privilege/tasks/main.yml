@@ -1,0 +1,229 @@
+---
+- name: grouper.ws.privilege
+  module_defaults:
+    # Whichever credential setup_grouper settled on, basic or JWT.
+    group/grouper.ws.all: "{{ grouper_auth }}"
+  vars:
+    # Group extensions must be unique site wide on stacks that enable
+    # veto.group.unique.extension, so every one carries the run id.
+    test_priv_folder: "{{ grouper_run_stem }}:priv"
+    test_priv_group: "{{ grouper_run_stem }}:priv:target{{ grouper_run_id }}"
+    test_priv_holder: "{{ grouper_run_stem }}:priv:holder{{ grouper_run_id }}"
+  block:
+
+    # ---------------------------------------------------------------- errors
+
+    - name: A group only privilege is rejected on a folder
+      grouper.ws.privilege:
+        stem: "{{ grouper_run_stem }}"
+        subject_id: GrouperAll
+        privileges: [read]
+      register: test_priv_wrong_owner
+      ignore_errors: true
+
+    - name: The wrong owner type was reported clearly
+      ansible.builtin.assert:
+        that:
+          - test_priv_wrong_owner is failed
+          - "'not valid on a stem' in test_priv_wrong_owner.msg"
+        quiet: true
+
+    - name: An unknown subject is reported by name
+      grouper.ws.privilege:
+        stem: "{{ grouper_run_stem }}"
+        subject_group: "{{ grouper_run_stem }}:no-such-group"
+        privileges: [view]
+      register: test_priv_unknown
+      ignore_errors: true
+
+    - name: The unknown subject was named
+      ansible.builtin.assert:
+        that:
+          - test_priv_unknown is failed
+          - "'no-such-group' in test_priv_unknown.msg"
+        quiet: true
+
+    # --------------------------------------------------------------- setup
+
+    - name: Create the folder privileges are set on
+      grouper.ws.stem:
+        name: "{{ test_priv_folder }}"
+
+    - name: Create the group privileges are set on
+      grouper.ws.group:
+        name: "{{ test_priv_group }}"
+
+    - name: Create the group that receives privileges
+      grouper.ws.group:
+        name: "{{ test_priv_holder }}"
+
+    # ------------------------------------------------------- folder privileges
+
+    - name: Grant a group every folder privilege
+      grouper.ws.privilege:
+        stem: "{{ test_priv_folder }}"
+        subject_group: "{{ test_priv_holder }}"
+        privileges: [admin, create, attr_read, attr_update, view]
+      register: test_priv_stem_granted
+
+    - name: Every folder privilege was granted
+      ansible.builtin.assert:
+        that:
+          - test_priv_stem_granted is changed
+          - test_priv_stem_granted.granted == ['admin', 'attr_read', 'attr_update', 'create', 'view']
+          - test_priv_stem_granted.revoked == []
+          - test_priv_stem_granted.subject.sourceId == 'g:gsa'
+        quiet: true
+
+    - name: Grant the same folder privileges again
+      grouper.ws.privilege:
+        stem: "{{ test_priv_folder }}"
+        subject_group: "{{ test_priv_holder }}"
+        privileges: [view, create, admin, attr_update, attr_read]
+      register: test_priv_stem_repeated
+
+    - name: The repeat was a no-op
+      ansible.builtin.assert:
+        that:
+          - test_priv_stem_repeated is not changed
+        quiet: true
+
+    - name: Narrow the folder privileges
+      grouper.ws.privilege:
+        stem: "{{ test_priv_folder }}"
+        subject_group: "{{ test_priv_holder }}"
+        privileges: [create, view]
+      register: test_priv_stem_narrowed
+
+    - name: Only the unlisted privileges were revoked
+      ansible.builtin.assert:
+        that:
+          - test_priv_stem_narrowed is changed
+          - test_priv_stem_narrowed.granted == []
+          - test_priv_stem_narrowed.revoked == ['admin', 'attr_read', 'attr_update']
+          - test_priv_stem_narrowed.privileges == ['create', 'view']
+        quiet: true
+
+    # -------------------------------------------------------- group privileges
+
+    - name: Check mode predicts a grant without making it
+      grouper.ws.privilege:
+        group: "{{ test_priv_group }}"
+        subject_group: "{{ test_priv_holder }}"
+        privileges: [read, view]
+      check_mode: true
+      register: test_priv_checked
+
+    - name: Check mode reported the grant
+      ansible.builtin.assert:
+        that:
+          - test_priv_checked is changed
+          - test_priv_checked.granted == ['read', 'view']
+        quiet: true
+
+    - name: Grant every group privilege
+      grouper.ws.privilege:
+        group: "{{ test_priv_group }}"
+        subject_group: "{{ test_priv_holder }}"
+        privileges: [admin, update, read, view, optin, optout, attr_read, attr_update]
+      register: test_priv_group_granted
+
+    - name: Check mode had written nothing, so everything was granted now
+      ansible.builtin.assert:
+        that:
+          - test_priv_group_granted is changed
+          - test_priv_group_granted.granted | length == 8
+        quiet: true
+
+    - name: Grant the same group privileges again
+      grouper.ws.privilege:
+        group: "{{ test_priv_group }}"
+        subject_group: "{{ test_priv_holder }}"
+        privileges: [admin, update, read, view, optin, optout, attr_read, attr_update]
+      register: test_priv_group_repeated
+
+    - name: The repeat was a no-op
+      ansible.builtin.assert:
+        that:
+          - test_priv_group_repeated is not changed
+        quiet: true
+
+    - name: Swap to a different set, granting and revoking at once
+      grouper.ws.privilege:
+        group: "{{ test_priv_group }}"
+        subject_group: "{{ test_priv_holder }}"
+        privileges: [read, view]
+      register: test_priv_group_swapped
+
+    - name: The swap revoked the rest
+      ansible.builtin.assert:
+        that:
+          - test_priv_group_swapped is changed
+          - test_priv_group_swapped.revoked == ['admin', 'attr_read', 'attr_update', 'optin', 'optout', 'update']
+          - test_priv_group_swapped.diff.before.privileges | length == 8
+          - test_priv_group_swapped.diff.after.privileges == ['read', 'view']
+        quiet: true
+
+    # Grouper refuses admin, update and attr_update to GrouperAll outright.
+    # Its reason is buried in a stack trace on an HTTP 500, so this checks it
+    # still reaches the task failure.
+    - name: Grouper's own refusal is passed on readably
+      grouper.ws.privilege:
+        group: "{{ test_priv_group }}"
+        subject_id: GrouperAll
+        subject_source_id: g:isa
+        privileges: [admin]
+      register: test_priv_refused
+      ignore_errors: true
+
+    - name: The refusal named Grouper's reason
+      ansible.builtin.assert:
+        that:
+          - test_priv_refused is failed
+          - "\"can't get a manage privilege\" in test_priv_refused.msg"
+          - test_priv_refused.msg | length < 2000
+        quiet: true
+
+    - name: A second subject on the same group
+      grouper.ws.privilege:
+        group: "{{ test_priv_group }}"
+        subject_id: GrouperAll
+        subject_source_id: g:isa
+        privileges: [optin, view]
+      register: test_priv_second
+
+    - name: The second subject got its own privileges
+      ansible.builtin.assert:
+        that:
+          - test_priv_second is changed
+          - test_priv_second.granted == ['optin', 'view']
+        quiet: true
+
+    - name: Revoke everything from the first subject
+      grouper.ws.privilege:
+        group: "{{ test_priv_group }}"
+        subject_group: "{{ test_priv_holder }}"
+        privileges: []
+      register: test_priv_group_emptied
+
+    - name: Everything was revoked from the first subject
+      ansible.builtin.assert:
+        that:
+          - test_priv_group_emptied is changed
+          - test_priv_group_emptied.revoked == ['read', 'view']
+          - test_priv_group_emptied.privileges == []
+        quiet: true
+
+    - name: Read the second subject back with a no-op
+      grouper.ws.privilege:
+        group: "{{ test_priv_group }}"
+        subject_id: GrouperAll
+        subject_source_id: g:isa
+        privileges: [optin, view]
+      register: test_priv_other_subject
+
+    - name: The second subject was not touched
+      ansible.builtin.assert:
+        that:
+          - test_priv_other_subject is not changed
+        quiet: true

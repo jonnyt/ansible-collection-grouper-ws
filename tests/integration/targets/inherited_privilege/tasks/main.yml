@@ -1,0 +1,166 @@
+---
+- name: grouper.ws.inherited_privilege
+  module_defaults:
+    # Whichever credential setup_grouper settled on, basic or JWT.
+    group/grouper.ws.all: "{{ grouper_auth }}"
+  vars:
+    test_inh_folder: "{{ grouper_run_stem }}:inherit"
+    test_inh_holder: "{{ grouper_run_stem }}:inherit:holder{{ grouper_run_id }}"
+    test_inh_child: "{{ grouper_run_stem }}:inherit:sub:child{{ grouper_run_id }}"
+    test_inh_child_folder: "{{ grouper_run_stem }}:inherit:sub:newfolder"
+  block:
+
+    # ---------------------------------------------------------------- errors
+
+    - name: An empty privilege list is refused
+      grouper.ws.inherited_privilege:
+        stem: "{{ grouper_run_stem }}"
+        subject_id: GrouperAll
+        group_privileges: []
+      register: test_inh_empty
+      ignore_errors: true
+
+    - name: The empty list was explained
+      ansible.builtin.assert:
+        that:
+          - test_inh_empty is failed
+          - "'never removes a rule' in test_inh_empty.msg"
+        quiet: true
+
+    # --------------------------------------------------------------- setup
+
+    - name: Create the folder the rules sit on
+      grouper.ws.stem:
+        name: "{{ test_inh_folder }}"
+
+    - name: Create the group that inherits privileges
+      grouper.ws.group:
+        name: "{{ test_inh_holder }}"
+
+    # ------------------------------------------------------------------ rules
+
+    - name: Check mode predicts the rules without writing them
+      grouper.ws.inherited_privilege:
+        stem: "{{ test_inh_folder }}"
+        scope: one
+        subject_group: "{{ test_inh_holder }}"
+        folder_privileges: [create, view]
+        group_privileges: [read, view]
+        attribute_def_privileges: [admin]
+      check_mode: true
+      register: test_inh_checked
+
+    - name: Check mode reported three new rules
+      ansible.builtin.assert:
+        that:
+          - test_inh_checked is changed
+          - test_inh_checked.changed_rules == ['attribute_def', 'folder', 'group']
+          - test_inh_checked.diff.before.group == {}
+        quiet: true
+
+    - name: Create the rules for real
+      grouper.ws.inherited_privilege:
+        stem: "{{ test_inh_folder }}"
+        scope: one
+        subject_group: "{{ test_inh_holder }}"
+        folder_privileges: [create, view]
+        group_privileges: [read, view]
+        attribute_def_privileges: [admin]
+      register: test_inh_created
+
+    - name: Three rules were created, and Grouper judged them valid
+      ansible.builtin.assert:
+        that:
+          - test_inh_created is changed
+          - test_inh_created.changed_rules == ['attribute_def', 'folder', 'group']
+          - test_inh_created.rules.group.privileges == ['read', 'view']
+          - test_inh_created.rules.group.scope == 'one'
+          - test_inh_created.rules.group.id | length > 0
+          - test_inh_created.rules.folder.id != test_inh_created.rules.group.id
+        quiet: true
+
+    - name: Create the same rules again
+      grouper.ws.inherited_privilege:
+        stem: "{{ test_inh_folder }}"
+        scope: one
+        subject_group: "{{ test_inh_holder }}"
+        folder_privileges: [view, create]
+        group_privileges: [view, read]
+        attribute_def_privileges: [admin]
+      register: test_inh_repeated
+
+    - name: The repeat was a no-op
+      ansible.builtin.assert:
+        that:
+          - test_inh_repeated is not changed
+          - test_inh_repeated.rules.group.id == test_inh_created.rules.group.id
+        quiet: true
+
+    - name: Widen the group rule to the whole subtree and add update
+      grouper.ws.inherited_privilege:
+        stem: "{{ test_inh_folder }}"
+        subject_group: "{{ test_inh_holder }}"
+        group_privileges: [read, update, view]
+      register: test_inh_updated
+
+    - name: The group rule was updated in place and the others left alone
+      ansible.builtin.assert:
+        that:
+          - test_inh_updated is changed
+          - test_inh_updated.changed_rules == ['group']
+          - test_inh_updated.rules.group.id == test_inh_created.rules.group.id
+          - test_inh_updated.rules.group.scope == 'sub'
+          - test_inh_updated.diff.before.group.scope == 'one'
+          - test_inh_updated.rules.folder is not defined
+        quiet: true
+
+    - name: A name pattern is a separate rule
+      grouper.ws.inherited_privilege:
+        stem: "{{ test_inh_folder }}"
+        name_pattern: "{{ test_inh_folder }}:%approvers"
+        subject_group: "{{ test_inh_holder }}"
+        group_privileges: [admin]
+      register: test_inh_patterned
+
+    - name: The patterned rule did not replace the plain one
+      ansible.builtin.assert:
+        that:
+          - test_inh_patterned is changed
+          - test_inh_patterned.rules.group.id != test_inh_created.rules.group.id
+        quiet: true
+
+    # ------------------------------------------------- rules fire on creation
+
+    - name: Create a group two levels down
+      grouper.ws.group:
+        name: "{{ test_inh_child }}"
+
+    - name: Read the new group's privileges back with a no-op
+      grouper.ws.privilege:
+        group: "{{ test_inh_child }}"
+        subject_group: "{{ test_inh_holder }}"
+        privileges: [read, update, view]
+      register: test_inh_child_privileges
+
+    - name: The subtree rule granted exactly its privileges
+      ansible.builtin.assert:
+        that:
+          - test_inh_child_privileges is not changed
+        quiet: true
+
+    - name: Create a folder two levels down
+      grouper.ws.stem:
+        name: "{{ test_inh_child_folder }}"
+
+    - name: Read the new folder's privileges back with a no-op
+      grouper.ws.privilege:
+        stem: "{{ test_inh_child_folder }}"
+        subject_group: "{{ test_inh_holder }}"
+        privileges: []
+      register: test_inh_child_folder_privileges
+
+    - name: The one-level folder rule did not reach two levels down
+      ansible.builtin.assert:
+        that:
+          - test_inh_child_folder_privileges is not changed
+        quiet: true

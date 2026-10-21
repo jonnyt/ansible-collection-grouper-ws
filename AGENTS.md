@@ -22,7 +22,17 @@ to need one, raise it rather than implementing it.
   user was explicit: this must never be an option. Membership belongs to
   loaders, provisioners and people, and a converging playbook would fight them.
 - **No deletion.** No `state: absent`, no `stemDelete`/`groupDelete`. Group
-  deletion destroys memberships and privileges.
+  deletion destroys memberships and privileges. The same goes for loader
+  definitions, JEXL scripts and inherited-privilege rules, which is why
+  `inherited_privilege` refuses an empty list instead of removing the rule.
+- **Privilege grants are the one exception, by the user's choice.**
+  `grouper.ws.privilege` is *exact per subject*: it revokes that subject's
+  unlisted direct privileges, and `[]` revokes them all. It never touches
+  another subject. Do not widen this to other subjects (no
+  `replaceAllExisting`), and do not extend it to rules.
+- **No member privilege.** The user listed MEMBER among group privileges.
+  Grouper has none (`AccessPrivilege.java`), and granting membership is
+  membership management, so it was dropped with the user's agreement.
 - **No on-demand loader runs.** The module writes the definition; Grouper's
   daemon decides when to act.
 - **Only declared attributes are managed.** Every module reads current state
@@ -174,6 +184,64 @@ in `UiV2GrouperLoader.java` (~1664), and the daemons
 - WS bypasses UI-only checks: script analysis and the
   `maxAbacMembershipSizeForSubject` tiers.
 
+### Privileges, verified from source and on the live stack
+
+`grouper.ws.privilege` and `grouper.ws.inherited_privilege`. Name tables live in
+`plugins/module_utils/privilege_spec.py`, rules in `rule_spec.py`.
+
+- Names: `NamingPrivilege.java` (`stemAdmin`, legacy alias `stem`, `create`,
+  `stemAttrRead`, `stemAttrUpdate`, `stemView`), `AccessPrivilege.java`
+  (`admin`, `update`, `read`, `view`, `optin`, `optout`, `groupAttrRead`,
+  `groupAttrUpdate`), and `AttributeDefPrivilege.java` (`attr*`, plus
+  `attrDefAttrRead` / `attrDefAttrUpdate`).
+- **Write** with `POST grouperPrivileges` / `WsRestAssignGrouperPrivilegesRequest`:
+  a group or stem lookup (never both), `privilegeType` `access`/`naming`,
+  `privilegeNames[]`, `allowed`. Per-item codes are `SUCCESS_ALLOWED`,
+  `SUCCESS_ALLOWED_ALREADY_EXISTED`, `SUCCESS_NOT_ALLOWED`,
+  `SUCCESS_NOT_ALLOWED_DIDNT_EXIST` and the two `*_EXISTS_EFFECTIVE` variants
+  (`GrouperServiceLogic.assignGrouperPrivileges`). **Never send
+  `replaceAllExisting`.** It revokes the privilege from every *other* subject.
+- **Read with getMemberships, not getGrouperPrivilegesLite.** Ask for
+  `fieldType` `access`/`naming` with `memberFilter: Immediate` and map
+  `listName` (`readers`, `stemAdmins`, `creators`, …, from `Field.java`) back to
+  the privilege. The lite call's `revokable` flag looks like "immediate" but
+  is not reliable. `GrouperPrivilegeAdapter` carries `revoke` across loop
+  iterations without resetting it, and on 6.5.0 direct grants to GrouperAll
+  come back `revokable=F`.
+- **Grouper refuses `admin`, `update` and `groupAttrUpdate` to GrouperAll**
+  ("GrouperAll can't get a manage privilege"), as an HTTP 500 carrying the whole
+  stack trace in `resultMessage`. `_extract_message` now condenses it, and
+  `_condense_stack_trace` says each `Caused by` reason once.
+- `getSubjects` does **not** return subjects in request order, so
+  `resolve_subject` only ever asks for one.
+- **Inherited privileges are rules.** `RuleApi.inheritGroupPrivileges` /
+  `inheritFolderPrivileges` / `inheritAttributeDefPrivileges` call `addAttribute`
+  for `<attribute root>:rules:rule` on the stem. That marker is multi-assign,
+  so a new rule needs `add_attr`, because `assign_attr` would land on an existing
+  one. The settings go on it as `stem_asgn`: act-as `g:isa`/`GrouperSystem`,
+  `ruleCheckType` `stemCreate`/`groupCreate`/`attributeDefCreate`,
+  `ruleCheckStemScope` `ONE`/`SUB`, `ruleThenEnum`
+  `assign{Stem,Group,AttributeDef}PrivilegeTo…Id`, `ruleThenEnumArg0`
+  `"sourceId :::: subjectId"`, `ruleThenEnumArg1` `", "`-joined, and the
+  optional `ruleIfConditionEnum` `nameMatchesSqlLikeString` + arg0. All three
+  check types honour the name pattern, in both firing and `runDaemon`.
+- Write **exactly** that shape. `RuleSubjectActAs.allowedToActAs` lets a
+  non-wheel caller act as GrouperSystem only for this shape, and only while
+  `rules.allowActAsGrouperSystemForInheritedStemPrivileges` is on (the default).
+- `ruleValid` is computed by `GrouperAttributeAssignValueRulesConfigHook` during
+  the WS write, which also clears the rule engine cache. Verified: it reads `T`
+  straight after the batch, and a group created over WS immediately afterwards
+  received the privileges. The module reads `ruleValid` back and fails on
+  anything but `T`, as `RuleApi.assertRuleValid` does.
+- Existing children are **not** covered at write time. The UI calls
+  `RuleApi.runRulesForOwner`, which WS lacks. They catch up when `otherJob.rules`
+  runs (`0 0 7 * * ?`). Documented, not worked around.
+- Packed subject strings (`SubjectFinder.findByPackedSubjectString`) use four
+  colons for an id, six for an identifier, and eight for either. The longest
+  separator is checked first.
+- Updating an existing rule by `wsOwnerAttributeAssignLookup: {uuid: …}` works,
+  and rewriting an unchanged value reports `changed: F`.
+
 ### JWT authentication, verified from source
 
 Source of truth:
@@ -240,7 +308,7 @@ handles wrapping, unwrapping, `WsRestResultProblem`, and the
 The version in the path is the **client** version. Grouper warns only when it
 exceeds the server version (`GrouperWsVersionUtils.assignCurrentClientVersion`),
 so a lower value is always safe. Default is `v6_0_000`. The user's local
-stack reports server version **6.4.0**; it accepts every client version
+stack reported server version **6.4.0** and has since been upgraded to **6.5.0**; it accepts every client version
 probed from `v2_5_000` to `v7_0_000` without complaint.
 
 ## Testing
@@ -264,7 +332,7 @@ list too long` — which names the sanity venv's python, not the copied one, so 
 reads like a broken install rather than a file-count problem. Same for
 `tests/output` left behind by a previous run.
 
-Both must stay green: 24 sanity tests, 140 unit tests as of `grouper.ws.jexl_script`.
+Both must stay green: 24 sanity tests, 198 unit tests as of `grouper.ws.inherited_privilege`.
 Unit tests need `pytest`, `pytest-xdist`, `pytest-mock` and `cryptography` in
 the venv (`tests/unit/requirements.txt` declares the last one).
 
@@ -278,6 +346,15 @@ directly, confirming the marker sits on the group and every setting is a
 38 ok, 10 changed, 0 failed, 3 deliberately ignored (blank script, and the
 conflict refusal in each direction). Read back directly: marker on the group,
 script as a `group_asgn` owned by it, both `enabled=T`.
+
+`privilege` and `inherited_privilege` verified green against the 6.5.0 stack,
+run as the JWT entity. `privilege` gave 37 ok, 11 changed, 0 failed and 3
+deliberately ignored (a group-only privilege on a stem, an unknown subject,
+and GrouperAll refused `admin`). `inherited_privilege` gave 28 ok, 9 changed,
+0 failed and 1 ignored (the empty list). In the same session `jexl_script`
+(38 ok), `loader` (35 ok) and `stem` (30 ok) were re-run green after the
+`marker_assign` refactor. Their group extensions carry the run id, so they do
+not trip the veto below.
 
 **The user's stack has `veto.group.unique.extension` enabled**, so a group
 *extension* must be unique site-wide, not just within its folder. Targets that

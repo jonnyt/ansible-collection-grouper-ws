@@ -7,5 +7,7 @@ action_groups:
     - group
     - loader
     - jexl_script
+    - privilege
+    - inherited_privilege
     - stem_info
     - group_info

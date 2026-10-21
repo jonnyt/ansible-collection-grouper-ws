@@ -1,8 +1,8 @@
 # Grouper Ansible Collection (`grouper.ws`)
 
 Manage [Internet2 Grouper](https://www.internet2.edu/products-services/trust-identity/grouper/)
-folders, groups, loader definitions and JEXL scripted groups idempotently from
-Ansible, through the Grouper Web Services (`grouper-ws`) REST API.
+folders, groups, privileges, loader definitions and JEXL scripted groups
+idempotently from Ansible, through the Grouper Web Services (`grouper-ws`) REST API.
 
 ## What this collection does, and deliberately does not, do
 
@@ -12,6 +12,8 @@ Ansible, through the Grouper Web Services (`grouper-ws`) REST API.
 | `grouper.ws.group` | Create or update a group, role or entity |
 | `grouper.ws.loader` | Attach or update a SQL or LDAP loader definition on a group |
 | `grouper.ws.jexl_script` | Attach or update a JEXL script (ABAC) on a group |
+| `grouper.ws.privilege` | Set one subject's privileges on a folder or group |
+| `grouper.ws.inherited_privilege` | Set the privileges a subject inherits on objects inside a folder |
 | `grouper.ws.stem_info` | Look up folders |
 | `grouper.ws.group_info` | Look up groups |
 
@@ -24,10 +26,13 @@ declared membership would fight those owners and silently undo their work on
 every run. When membership should come from a source of record, express that
 as a loader definition and let Grouper's daemon own it.
 
-**Nothing is ever deleted.** No module removes a stem or a group. Deleting a
-Grouper group destroys its memberships and any privileges granted through it,
-which is rarely what a converging playbook should do on its own. Removal is a
-deliberate, human act; do it in the UI or with `grouper-ws` directly.
+**Nothing is ever deleted.** No module removes a stem, a group, a loader or an
+inherited privilege rule. Deleting a Grouper group destroys its memberships and
+any privileges granted through it, which is rarely what a converging playbook
+should do on its own. Removal is a deliberate, human act; do it in the UI or
+with `grouper-ws` directly. The one exception is a privilege grant:
+`grouper.ws.privilege` makes a subject's direct privileges exactly what the
+task lists, so it revokes the ones left out.
 
 **Loaders are never run on demand.** The module writes the definition. Grouper's
 loader daemon decides when to act on it.
@@ -394,6 +399,89 @@ attribute assigned *on that marker assignment*, the same shape as an LDAP
 loader. That stem comes from `grouper.rootStemForBuiltinObjects`, not
 `grouper.attribute.rootStem`; override `jexl_script_stem` if your site has
 retuned it.
+
+## Privileges
+
+`grouper.ws.privilege` sets exactly which privileges one subject holds
+directly on a folder or a group. The subject is a person, or a group so that
+everyone in it gets the privileges:
+
+```yaml
+- name: HR admins administer the HR folder
+  grouper.ws.privilege:
+    stem: app:hr
+    subject_group: app:hr:security:admins
+    privileges: [admin, create, attr_read, attr_update, view]
+
+- name: A person can read and update one group
+  grouper.ws.privilege:
+    group: app:hr:groups:employees
+    subject_identifier: jdoe
+    subject_source_id: ldap
+    privileges: [read, update, view]
+```
+
+| On a | Privileges |
+| --- | --- |
+| folder | `admin`, `create`, `attr_read`, `attr_update`, `view` |
+| group | `admin`, `update`, `read`, `view`, `optin`, `optout`, `attr_read`, `attr_update` |
+
+There is no *member* privilege. Membership is not a privilege, and this
+collection never manages it.
+
+**Exact, for one subject.** The listed privileges are granted, and any other
+privilege that subject holds *directly* on the object is revoked. `[]` revokes
+them all. Other subjects are never touched, and neither is access the subject
+has through a group it belongs to; the module warns when a revoked privilege
+is still held that way.
+
+Grouper itself refuses `admin`, `update` and `attr_update` to `GrouperAll`.
+
+### Inherited privileges
+
+`grouper.ws.inherited_privilege` is the folder's *Inherited privileges* tab:
+privileges a subject receives on the folders, groups and attribute definitions
+created inside a folder.
+
+```yaml
+- name: HR admins administer everything created under the HR folder
+  grouper.ws.inherited_privilege:
+    stem: app:hr
+    subject_group: app:hr:security:admins
+    folder_privileges: [admin, create]
+    group_privileges: [admin]
+    attribute_def_privileges: [admin]
+
+- name: Auditors read the groups directly inside the reports folder
+  grouper.ws.inherited_privilege:
+    stem: app:hr:reports
+    scope: one
+    subject_group: app:audit:auditors
+    group_privileges: [read, view]
+```
+
+Each list is one Grouper rule on the folder, identified by the folder, the kind
+of object, the subject and the optional `name_pattern` (a SQL `LIKE` on the new
+object's full name). A list that is given becomes exactly that rule's
+privileges, a list left out leaves its rule alone, and changing `scope`
+(`sub`, the default, or `one`) updates the rule in place. A rule is never
+removed, so an empty list is refused.
+
+**Existing objects catch up the next morning.** New objects receive the
+privileges as they are created. The UI also applies a new rule to everything
+already in the folder, but web services have no call for that. Existing objects
+receive the privileges when Grouper's rules daemon (`otherJob.rules`) next
+runs, daily at 7am by default.
+
+**Shrinking a rule does not revoke anything.** It only stops future grants. Use
+`grouper.ws.privilege` on the objects that already received them.
+
+Rules act as GrouperSystem, as the UI's do. Grouper allows that for wheel
+members, for members of `rules.act.as.group`, and, when
+`rules.allowActAsGrouperSystemForInheritedStemPrivileges` is on (the default),
+for anyone allowed to write the rule at all. Rule attributes live under
+`<grouper.attribute.rootStem>:rules`; override `attribute_root_stem` if your
+site has retuned it.
 
 ## Acting as another subject
 

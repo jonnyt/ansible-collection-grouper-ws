@@ -84,11 +84,74 @@ GROUPER_REQUIRED_BY = {
 }
 
 
+#: The subject a privilege module grants to, shared by every such module.
+SUBJECT_ARG_SPEC = dict(
+    subject_id=dict(type='str'),
+    subject_identifier=dict(type='str'),
+    subject_source_id=dict(type='str'),
+    subject_group=dict(type='str'),
+)
+
+SUBJECT_MUTUALLY_EXCLUSIVE = [
+    ('subject_id', 'subject_identifier', 'subject_group'),
+    # A group subject always lives in the g:gsa source.
+    ('subject_group', 'subject_source_id'),
+]
+
+SUBJECT_REQUIRED_ONE_OF = [
+    ('subject_id', 'subject_identifier', 'subject_group'),
+]
+
+#: Grouper's source for groups acting as subjects.
+GROUP_SUBJECT_SOURCE = 'g:gsa'
+
+
 def grouper_argument_spec(**extra):
     """Return the common arg spec merged with module specific arguments."""
     spec = dict(GROUPER_ARG_SPEC)
     spec.update(extra)
     return spec
+
+
+def subject_lookup(params):
+    """Build a WsSubjectLookup from the subject options."""
+    if params.get('subject_group'):
+        return {'subjectIdentifier': params['subject_group'],
+                'subjectSourceId': GROUP_SUBJECT_SOURCE}
+    lookup = {}
+    if params.get('subject_id'):
+        lookup['subjectId'] = params['subject_id']
+    if params.get('subject_identifier'):
+        lookup['subjectIdentifier'] = params['subject_identifier']
+    if params.get('subject_source_id'):
+        lookup['subjectSourceId'] = params['subject_source_id']
+    return lookup
+
+
+def describe_lookup(lookup):
+    """Render a subject lookup for an error message."""
+    value = lookup.get('subjectId') or lookup.get('subjectIdentifier')
+    source = lookup.get('subjectSourceId')
+    return '%s in source %s' % (value, source) if source else value
+
+
+def resolve_subject(client, lookup):
+    """Return the WsSubject for a lookup, so callers know its source and id.
+
+    Resolving first turns a typo into one clear sentence, where the privilege
+    calls would otherwise fail per item with a bare SUBJECT_NOT_FOUND. Grouper
+    does not return subjects in request order, so only one is ever asked for.
+    """
+    envelope = client.post('subjects', 'WsRestGetSubjectsRequest', {
+        'wsSubjectLookups': [lookup],
+    })
+    for subject in envelope.get('wsSubjects') or []:
+        if is_true(subject.get('success', 'F')) and subject.get('id'):
+            return subject
+        raise GrouperError('Could not find subject %s: %s'
+                           % (describe_lookup(lookup), subject.get('resultCode')))
+    raise GrouperError('Grouper returned no subject for %s'
+                       % describe_lookup(lookup))
 
 
 def is_true(value):
@@ -131,12 +194,25 @@ def _condense_stack_trace(text):
     if not text:
         return text
     lines = [line.strip() for line in text.strip().splitlines()]
+    if not any(line.startswith('at ') or line.startswith('Caused by:')
+               for line in lines):
+        # Not a stack trace, so every line may matter.
+        return text.strip()[:1000]
     kept = [line for line in lines
             if line and not line.startswith('at ') and not line.startswith('... ')]
     if not kept:
         return text.strip()[:500]
-    # The first line states the failure, each 'Caused by' narrows it.
-    summary = [kept[0]] + [line for line in kept[1:] if line.startswith('Caused by:')]
+    # The first line states the failure, each 'Caused by' narrows it. Grouper
+    # wraps one reason in several exception classes, so say each reason once.
+    summary = [kept[0]]
+    reasons = set()
+    for line in kept[1:]:
+        if not line.startswith('Caused by:'):
+            continue
+        reason = line.split(': ', 2)[-1]
+        if reason not in reasons:
+            reasons.add(reason)
+            summary.append(line)
     return ' / '.join(summary)[:1000]
 
 
@@ -376,7 +452,9 @@ class GrouperClient(object):
             meta = envelope.get('resultMetadata')
             if not isinstance(meta, dict):
                 continue
-            message = meta.get('resultMessage') or meta.get('resultCode')
+            # An EXCEPTION result carries the whole stack trace as its message.
+            message = (_condense_stack_trace(meta.get('resultMessage'))
+                       or meta.get('resultCode'))
             details = _per_item_failures(envelope)
             if details:
                 return '%s [%s]' % (message, '; '.join(details))
