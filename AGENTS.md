@@ -64,6 +64,17 @@ on `raw.githubusercontent.com/Internet2/grouper/GROUPER_6_BRANCH/<path>` reads i
 (`WsStemSaveResult.java`). `changed` is derived from that, not from a local
 diff. `save_changed()` in `plugins/module_utils/grouper.py` owns the mapping.
 
+Check mode has no result code, so it must predict one locally, and the
+prediction has to match Grouper's own comparison or check mode reports changes
+that a real run never makes. `StemSave`/`GroupSave` compare the description
+**trimmed** (`StringUtils.trim`, ~`GroupSave.java:870`, `StemSave.java:563`) and
+the display extension exactly, and the WS layer passes values through
+untrimmed. A whitespace-only difference is therefore never written and never
+converges. `save_needed()` mirrors this; keep the two in step. Modules that
+report the local diff in both modes (loader, jexl_script, inherited_privilege)
+cannot show this split, but `privilege` can: check mode trusts the
+getMemberships read, a real run trusts the assign result codes.
+
 ### Loader settings are assignments *on an assignment*
 
 This is the single most important detail, and the easiest to get wrong. For
@@ -352,7 +363,7 @@ list too long` — which names the sanity venv's python, not the copied one, so 
 reads like a broken install rather than a file-count problem. Same for
 `tests/output` left behind by a previous run.
 
-Both must stay green: 24 sanity tests, 217 unit tests as of `delete_previously_managed_groups`.
+Both must stay green: 24 sanity tests, 222 unit tests as of the check-mode description fix.
 Unit tests need `pytest`, `pytest-xdist`, `pytest-mock` and `cryptography` in
 the venv (`tests/unit/requirements.txt` declares the last one).
 

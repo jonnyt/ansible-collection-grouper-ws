@@ -513,3 +513,24 @@ def save_changed(result):
     # Unknown but successful codes are treated as a change so we never under
     # report. Grouper only returns the three codes above for saves today.
     return True
+
+
+def save_needed(current, desired, fields):
+    """Predict whether stemSave/groupSave would change any of the fields.
+
+    Check mode has no result code to go on, so this must agree with Grouper.
+    StemSave and GroupSave compare the description trimmed and the display
+    extension exactly. A description differing only in surrounding whitespace,
+    such as the trailing newline of a YAML block scalar, is never written, so
+    an untrimmed comparison would report a change on every check run.
+    """
+    if current is None:
+        return True
+    for field in fields:
+        before = current.get(field) or ''
+        after = desired[field] or ''
+        if field == 'description':
+            before, after = before.strip(), after.strip()
+        if before != after:
+            return True
+    return False

@@ -16,6 +16,7 @@ from ansible_collections.grouper.ws.plugins.module_utils.grouper import (
     GrouperError,
     is_true,
     save_changed,
+    save_needed,
     summarise_body,
     to_ws_bool,
 )
@@ -278,6 +279,37 @@ class TestSaveChanged:
 
     def test_unknown_codes_are_reported_as_changed(self):
         assert save_changed({'resultMetadata': {'resultCode': 'SOMETHING'}}) is True
+
+
+class TestSaveNeeded:
+    """Check mode must predict what StemSave/GroupSave will report."""
+
+    FIELDS = ('displayExtension', 'description')
+
+    def test_missing_object_needs_a_save(self):
+        assert save_needed(None, {'displayExtension': 'a', 'description': ''},
+                           self.FIELDS) is True
+
+    def test_description_is_compared_trimmed(self):
+        # A YAML block scalar adds a trailing newline Grouper never writes.
+        current = {'displayExtension': 'Staff', 'description': 'All staff'}
+        desired = {'displayExtension': 'Staff', 'description': 'All staff\n'}
+        assert save_needed(current, desired, self.FIELDS) is False
+
+    def test_missing_description_matches_blank(self):
+        current = {'displayExtension': 'Staff'}
+        desired = {'displayExtension': 'Staff', 'description': '  '}
+        assert save_needed(current, desired, self.FIELDS) is False
+
+    def test_display_extension_is_compared_exactly(self):
+        current = {'displayExtension': 'Staff', 'description': ''}
+        desired = {'displayExtension': 'Staff ', 'description': ''}
+        assert save_needed(current, desired, self.FIELDS) is True
+
+    def test_real_description_change_is_seen(self):
+        current = {'displayExtension': 'Staff', 'description': 'old'}
+        desired = {'displayExtension': 'Staff', 'description': 'new'}
+        assert save_needed(current, desired, self.FIELDS) is True
 
 
 class TestSummariseBody:

@@ -110,6 +110,7 @@ from ansible_collections.grouper.ws.plugins.module_utils.grouper import (
     GrouperError,
     grouper_argument_spec,
     save_changed,
+    save_needed,
     to_ws_bool,
 )
 
@@ -150,13 +151,6 @@ def build_desired(module, current, name):
     return desired
 
 
-def needs_change(current, desired):
-    if current is None:
-        return True
-    return any((current.get(field) or '') != desired[field]
-               for field in MANAGED_FIELDS)
-
-
 def main():
     module = AnsibleModule(
         argument_spec=grouper_argument_spec(
@@ -178,7 +172,7 @@ def main():
     try:
         current = find_stem(client, name)
         desired = build_desired(module, current, name)
-        changed = needs_change(current, desired)
+        changed = save_needed(current, desired, MANAGED_FIELDS)
 
         diff = {
             'before': {field: (current or {}).get(field, '')
