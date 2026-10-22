@@ -116,6 +116,26 @@ Group loader types are exactly these five: `SQL_SIMPLE`, `SQL_GROUP_LIST`,
 `MAINTENANCE`, `CHANGE_LOG`, `MESSAGE_LISTENER`, `PSP_FULL_SYNC` are daemon
 jobs. None of those belong in this module.
 
+### Delete previously managed groups replaces `groups_like`
+
+Added in Grouper 6.3.0 (GRP-7073/7074), as `delete_previously_managed_groups`.
+
+- Names: `grouperLoaderDeletePreviouslyManagedGroups` (SQL, legacy prefix, in
+  `GrouperLoader.java`) and `grouperLoaderLdapDeletePreviouslyManagedGroups`
+  (`LoaderLdapUtils.java`). `attributeOptional` lists it only for `SQL_GROUP_LIST`,
+  `LDAP_GROUP_LIST` and `LDAP_GROUPS_FROM_ATTRIBUTES`, the same set as `groups_like`.
+- `syncGroupList` honours it **only while the like string is blank**, so the two are
+  mutually exclusive. The UI save (`UiV2GrouperLoader` ~1780/~1831) blanks
+  `groupsLike` when it is switched on. The user chose to do the same: `true` removes a
+  stored `groups_like` in the same batch, even without `purge_unmanaged`
+  (`implied_removals`). Both in one task is a validation error.
+- The UI writes `T`, so the module writes `T`/`F` and normalises stored
+  `true`/`false` before comparing (`normalize_current`).
+- When blank it falls back to the global `loader.deleteGroupsNoLongerInSource`, so an
+  explicit `false` is meaningful and is stored, not removed.
+- Grouper deletes only groups carrying this loader's `loaderMetadata`. The module
+  itself deletes nothing, so the no-deletion rule still holds.
+
 ### There is no way to schedule or enable a loader job over WS
 
 Asked for, and checked properly: `GrouperServiceRest` exposes ~64 operations
@@ -332,7 +352,7 @@ list too long` — which names the sanity venv's python, not the copied one, so 
 reads like a broken install rather than a file-count problem. Same for
 `tests/output` left behind by a previous run.
 
-Both must stay green: 24 sanity tests, 198 unit tests as of `grouper.ws.inherited_privilege`.
+Both must stay green: 24 sanity tests, 217 unit tests as of `delete_previously_managed_groups`.
 Unit tests need `pytest`, `pytest-xdist`, `pytest-mock` and `cryptography` in
 the venv (`tests/unit/requirements.txt` declares the last one).
 

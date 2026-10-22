@@ -1,0 +1,7 @@
+---
+minor_changes:
+  - loader - add ``delete_previously_managed_groups`` for ``SQL_GROUP_LIST``,
+    ``LDAP_GROUP_LIST`` and ``LDAP_GROUPS_FROM_ATTRIBUTES`` (Grouper 6.3.0+),
+    the replacement for the deprecated ``groups_like``. The two are mutually
+    exclusive, and setting it to ``true`` removes a stored ``groups_like`` as
+    the Grouper UI does.

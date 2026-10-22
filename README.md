@@ -244,7 +244,7 @@ already exists as something else.
       database: grouper
       schedule_type: START_TO_START_INTERVAL
       interval_seconds: 3600
-      groups_like: "app:hr:groups:departments:%"
+      delete_previously_managed_groups: true
       query: >-
         select net_id as SUBJECT_ID,
                'app:hr:groups:departments:' || dept_code as GROUP_NAME
@@ -254,6 +254,12 @@ already exists as something else.
                dept_name as GROUP_DISPLAY_NAME
         from hr_department
 ```
+
+`delete_previously_managed_groups` (Grouper 6.3.0+) lets the loader delete
+groups it created that have dropped out of the results. It replaces the
+deprecated `groups_like` and is mutually exclusive with it: setting it to
+`true` removes a stored `groups_like`, as the Grouper UI does. Only groups
+carrying this job's loader metadata are deleted.
 
 ### An LDAP loader
 

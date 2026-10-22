@@ -261,6 +261,77 @@
               - sql_list_again is not changed
             quiet: true
 
+        - name: Switch the SQL_GROUP_LIST to delete previously managed groups
+          grouper.ws.loader:
+            group: "{{ grouper_run_stem }}:loaders:sqllist"
+            type: SQL_GROUP_LIST
+            sql:
+              database: grouper
+              schedule_type: CRON
+              quartz_cron: "0 0 4 * * ?"
+              delete_previously_managed_groups: true
+              query: >-
+                select subject_id as SUBJECT_ID, 'x' as GROUP_NAME
+                from grouper_members where 1 = 0
+          register: sql_delete_managed
+
+        - name: The new setting was written and the stored like string removed
+          ansible.builtin.assert:
+            that:
+              - sql_delete_managed is changed
+              - >-
+                sql_delete_managed.loader[
+                'etc:legacy:attribute:legacyAttribute_grouperLoaderDeletePreviouslyManagedGroups']
+                == 'T'
+              - >-
+                'etc:legacy:attribute:legacyAttribute_grouperLoaderGroupsLike'
+                in sql_delete_managed.removed_attributes
+            quiet: true
+
+        - name: Delete previously managed groups is idempotent
+          grouper.ws.loader:
+            group: "{{ grouper_run_stem }}:loaders:sqllist"
+            type: SQL_GROUP_LIST
+            sql:
+              database: grouper
+              schedule_type: CRON
+              quartz_cron: "0 0 4 * * ?"
+              delete_previously_managed_groups: true
+              query: >-
+                select subject_id as SUBJECT_ID, 'x' as GROUP_NAME
+                from grouper_members where 1 = 0
+          register: sql_delete_managed_again
+
+        - name: The repeat changed and removed nothing
+          ansible.builtin.assert:
+            that:
+              - sql_delete_managed_again is not changed
+              - sql_delete_managed_again.removed_attributes | length == 0
+            quiet: true
+
+        - name: Delete previously managed groups refuses a like string beside it
+          grouper.ws.loader:
+            group: "{{ grouper_run_stem }}:loaders:sqllist"
+            type: SQL_GROUP_LIST
+            sql:
+              database: grouper
+              schedule_type: CRON
+              quartz_cron: "0 0 4 * * ?"
+              delete_previously_managed_groups: true
+              groups_like: "{{ grouper_run_stem }}:loaders:sqllist:%"
+              query: >-
+                select subject_id as SUBJECT_ID, 'x' as GROUP_NAME
+                from grouper_members where 1 = 0
+          register: sql_delete_and_like
+          ignore_errors: true
+
+        - name: Both together were rejected
+          ansible.builtin.assert:
+            that:
+              - sql_delete_and_like is failed
+              - "'mutually exclusive' in sql_delete_and_like.msg"
+            quiet: true
+
     # ----------------------------------------------------------- LDAP loader
 
     - name: LDAP loader tests

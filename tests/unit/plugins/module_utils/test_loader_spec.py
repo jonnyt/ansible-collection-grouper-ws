@@ -147,6 +147,93 @@ class TestValidateOptions:
         assert any("'group_attribute' is required" in e for e in errors)
 
 
+class TestDeletePreviouslyManagedGroups:
+    """Grouper 6.3.0's replacement for groups_like (GRP-7074)."""
+
+    SQL_LIKE = 'etc:legacy:attribute:legacyAttribute_grouperLoaderGroupsLike'
+    SQL_DELETE = ('etc:legacy:attribute:'
+                  'legacyAttribute_grouperLoaderDeletePreviouslyManagedGroups')
+    LDAP_DELETE = ('etc:attribute:loaderLdap:'
+                   'grouperLoaderLdapDeletePreviouslyManagedGroups')
+
+    SQL_LIST = {'database': 'grouper', 'query': 'select 1',
+                'schedule_type': 'CRON', 'quartz_cron': '0 0 7 * * ?'}
+    LDAP_LIST = {'server_id': 'personLdap', 'filter': '(cn=x)',
+                 'quartz_cron': '0 0 * * * ?', 'subject_attribute': 'hasMember'}
+
+    def test_sql_attribute_name(self):
+        naming = ls.LoaderNaming('SQL_GROUP_LIST')
+        desired = ls.build_desired_attributes(
+            'SQL_GROUP_LIST', {'delete_previously_managed_groups': True}, naming)
+        assert desired[self.SQL_DELETE] == 'T'
+
+    def test_ldap_attribute_name(self):
+        naming = ls.LoaderNaming('LDAP_GROUP_LIST')
+        desired = ls.build_desired_attributes(
+            'LDAP_GROUP_LIST', {'delete_previously_managed_groups': False}, naming)
+        assert desired[self.LDAP_DELETE] == 'F'
+
+    @pytest.mark.parametrize('loader_type', ('SQL_GROUP_LIST', 'LDAP_GROUP_LIST',
+                                             'LDAP_GROUPS_FROM_ATTRIBUTES'))
+    def test_allowed_for_group_list_types(self, loader_type):
+        assert 'delete_previously_managed_groups' in \
+            ls.ALLOWED_OPTIONS[loader_type]
+
+    def test_rejected_for_sql_simple(self):
+        errors = ls.validate_options('SQL_SIMPLE', dict(
+            self.SQL_LIST, delete_previously_managed_groups=True))
+        assert any("'delete_previously_managed_groups' is not supported" in e
+                   for e in errors)
+
+    def test_rejected_for_ldap_simple(self):
+        errors = ls.validate_options('LDAP_SIMPLE', dict(
+            self.LDAP_LIST, delete_previously_managed_groups=True))
+        assert any("'delete_previously_managed_groups' is not supported" in e
+                   for e in errors)
+
+    def test_true_is_exclusive_with_groups_like(self):
+        errors = ls.validate_options('SQL_GROUP_LIST', dict(
+            self.SQL_LIST, delete_previously_managed_groups=True,
+            groups_like='a:%'))
+        assert any('mutually exclusive' in e for e in errors)
+
+    def test_false_may_sit_beside_groups_like(self):
+        assert ls.validate_options('SQL_GROUP_LIST', dict(
+            self.SQL_LIST, delete_previously_managed_groups=False,
+            groups_like='a:%')) == []
+
+    @pytest.mark.parametrize('stored,expected', [
+        ('T', 'T'), ('true', 'T'), (' TRUE ', 'T'), ('F', 'F'), ('false', 'F'),
+        ('maybe', 'maybe'),
+    ])
+    def test_stored_booleans_are_normalised(self, stored, expected):
+        naming = ls.LoaderNaming('SQL_GROUP_LIST')
+        current = {self.SQL_DELETE: stored, self.SQL_LIKE: 'true'}
+        normalized = ls.normalize_current(current, naming)
+        assert normalized[self.SQL_DELETE] == expected
+        # Only boolean settings are touched.
+        assert normalized[self.SQL_LIKE] == 'true'
+
+    def test_true_displaces_a_stored_groups_like(self):
+        naming = ls.LoaderNaming('SQL_GROUP_LIST')
+        assert ls.implied_removals(
+            {'delete_previously_managed_groups': True}, naming,
+            {self.SQL_LIKE: 'a:%'}) == [self.SQL_LIKE]
+
+    def test_nothing_displaced_without_a_stored_groups_like(self):
+        naming = ls.LoaderNaming('SQL_GROUP_LIST')
+        assert ls.implied_removals(
+            {'delete_previously_managed_groups': True}, naming, {}) == []
+
+    @pytest.mark.parametrize('value', (False, None))
+    def test_groups_like_kept_unless_true(self, value):
+        naming = ls.LoaderNaming('LDAP_GROUP_LIST')
+        like = 'etc:attribute:loaderLdap:grouperLoaderLdapGroupsLike'
+        assert ls.implied_removals(
+            {'delete_previously_managed_groups': value}, naming,
+            {like: 'a:%'}) == []
+
+
 class TestSchemaConsistency:
     """Guards against the option maps and the allow lists drifting apart."""
 

@@ -108,7 +108,23 @@ options:
         description:
           - SQL LIKE pattern identifying groups this job manages, so that
             groups no longer returned by the query can be emptied or removed.
+          - Deprecated by Grouper in favour of
+            I(delete_previously_managed_groups).
         type: str
+      delete_previously_managed_groups:
+        description:
+          - When C(true), the loader deletes groups it previously created that
+            no longer appear in its results. Only groups carrying this job's
+            loader metadata are affected, and groups used elsewhere are kept.
+          - Grouper's replacement for I(groups_like), and mutually exclusive
+            with it. When C(true), a I(groups_like) setting already stored on
+            the group is removed, as the Grouper UI does, because Grouper
+            ignores this option while a like string is present.
+          - C(false) is stored explicitly and overrides the site wide
+            C(loader.deleteGroupsNoLongerInSource). Omit the option to leave
+            the stored value untouched.
+          - Only valid for C(SQL_GROUP_LIST). Requires Grouper 6.3.0 or later.
+        type: bool
   ldap:
     description:
       - Settings for the C(LDAP_SIMPLE), C(LDAP_GROUP_LIST) and
@@ -170,7 +186,23 @@ options:
         description:
           - Pattern identifying groups this job manages, so that groups no
             longer returned can be emptied or removed.
+          - Deprecated by Grouper in favour of
+            I(delete_previously_managed_groups).
         type: str
+      delete_previously_managed_groups:
+        description:
+          - When C(true), the loader deletes groups it previously created that
+            no longer appear in its results. Only groups carrying this job's
+            loader metadata are affected, and groups used elsewhere are kept.
+          - Grouper's replacement for I(groups_like), and mutually exclusive
+            with it. When C(true), a I(groups_like) setting already stored on
+            the group is removed, as the Grouper UI does, because Grouper
+            ignores this option while a like string is present.
+          - C(false) is stored explicitly and overrides the site wide
+            C(loader.deleteGroupsNoLongerInSource). Omit the option to leave
+            the stored value untouched.
+          - Only valid for C(LDAP_GROUP_LIST) and C(LDAP_GROUPS_FROM_ATTRIBUTES). Requires Grouper 6.3.0 or later.
+        type: bool
       group_types:
         description:
           - Group types to assign to groups created by this job.
@@ -347,7 +379,7 @@ EXAMPLES = r'''
       database: grouper
       schedule_type: START_TO_START_INTERVAL
       interval_seconds: 3600
-      groups_like: "app:hr:groups:departments:%"
+      delete_previously_managed_groups: true
       query: >-
         select net_id as SUBJECT_ID,
                'app:hr:groups:departments:' || dept_code as GROUP_NAME
@@ -395,8 +427,9 @@ changed_attributes:
   elements: str
 removed_attributes:
   description:
-    - Attribute def names that were removed, only ever non empty when
-      I(purge_unmanaged) is C(true).
+    - Attribute def names that were removed. Non empty only when
+      I(purge_unmanaged) is C(true), or when
+      I(delete_previously_managed_groups) displaced a stored I(groups_like).
   returned: success
   type: list
   elements: str
@@ -419,7 +452,9 @@ from ansible_collections.grouper.ws.plugins.module_utils.loader_spec import (
     SUBJECT_ID_TYPES,
     LoaderNaming,
     build_desired_attributes,
+    implied_removals,
     is_sql,
+    normalize_current,
     validate_options,
 )
 from ansible_collections.grouper.ws.plugins.module_utils.jexl_spec import (
@@ -443,6 +478,7 @@ SQL_SUBOPTIONS = dict(
     and_groups=dict(type='list', elements='str'),
     group_types=dict(type='list', elements='str'),
     groups_like=dict(type='str'),
+    delete_previously_managed_groups=dict(type='bool'),
 )
 
 LDAP_SUBOPTIONS = dict(
@@ -458,6 +494,7 @@ LDAP_SUBOPTIONS = dict(
     priority=dict(type='int'),
     and_groups=dict(type='list', elements='str'),
     groups_like=dict(type='str'),
+    delete_previously_managed_groups=dict(type='bool'),
     group_types=dict(type='list', elements='str'),
     group_attribute=dict(type='str'),
     group_name_expression=dict(type='str'),
@@ -539,21 +576,22 @@ def main():
 
         marker, current = read_current(client, group, naming.marker_name)
 
+        comparable = normalize_current(current, naming)
         to_write = {name: value for name, value in desired.items()
-                    if current.get(name) != value}
+                    if comparable.get(name) != value}
 
-        to_remove = []
+        to_remove = implied_removals(suite, naming, current)
         if params['purge_unmanaged']:
             # Only ever remove attributes from this loader's own namespace.
             managed_prefix = naming.attribute_name('')
             known = set(naming.attribute_name(ext)
                         for ext in naming.option_map.values())
             known.add(naming.type_attribute_name)
-            to_remove = sorted(
+            to_remove = sorted(set(to_remove).union(
                 name for name in current
                 if name not in desired
                 and name.startswith(managed_prefix)
-                and name in known)
+                and name in known))
 
         changed = bool(to_write or to_remove or marker is None)
 

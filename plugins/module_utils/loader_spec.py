@@ -61,6 +61,7 @@ SQL_ATTRIBUTE_MAP = {
     'and_groups': 'grouperLoaderAndGroups',
     'group_types': 'grouperLoaderGroupTypes',
     'groups_like': 'grouperLoaderGroupsLike',
+    'delete_previously_managed_groups': 'grouperLoaderDeletePreviouslyManagedGroups',
 }
 
 #: The loader type itself is stored as an attribute like any other.
@@ -80,6 +81,8 @@ LDAP_ATTRIBUTE_MAP = {
     'priority': 'grouperLoaderLdapPriority',
     'and_groups': 'grouperLoaderLdapAndGroups',
     'groups_like': 'grouperLoaderLdapGroupsLike',
+    'delete_previously_managed_groups':
+        'grouperLoaderLdapDeletePreviouslyManagedGroups',
     'group_types': 'grouperLoaderLdapGroupTypes',
     'group_attribute': 'grouperLoaderLdapGroupAttribute',
     'group_name_expression': 'grouperLoaderLdapGroupNameExpression',
@@ -134,7 +137,8 @@ _LDAP_COMMON = ('server_id', 'filter', 'search_dn', 'search_scope',
 ALLOWED_OPTIONS = {
     'SQL_SIMPLE': frozenset(_SQL_COMMON),
     'SQL_GROUP_LIST': frozenset(
-        _SQL_COMMON + ('group_query', 'group_types', 'groups_like')),
+        _SQL_COMMON + ('group_query', 'group_types', 'groups_like',
+                       'delete_previously_managed_groups')),
     'LDAP_SIMPLE': frozenset(
         _LDAP_COMMON + ('group_attribute', 'group_name_expression',
                         'group_description_expression')),
@@ -142,8 +146,8 @@ ALLOWED_OPTIONS = {
         _LDAP_COMMON + ('group_attribute', 'group_name_expression',
                         'group_display_name_expression',
                         'group_description_expression', 'group_types',
-                        'groups_like', 'group_attr_readers',
-                        'group_attr_updaters')),
+                        'groups_like', 'delete_previously_managed_groups',
+                        'group_attr_readers', 'group_attr_updaters')),
     'LDAP_GROUPS_FROM_ATTRIBUTES': frozenset(
         _LDAP_COMMON + ('group_attribute', 'group_name_expression',
                         'group_display_name_expression',
@@ -151,9 +155,18 @@ ALLOWED_OPTIONS = {
                         'group_attribute_processing_expression',
                         'attribute_filter_expression',
                         'results_transformation_class', 'group_types',
-                        'groups_like', 'group_attr_readers',
-                        'group_attr_updaters')),
+                        'groups_like', 'delete_previously_managed_groups',
+                        'group_attr_readers', 'group_attr_updaters')),
 }
+
+
+# Options stored as Grouper booleans. The UI writes "T" (UiV2GrouperLoader),
+# and GrouperUtil.booleanValue also accepts true/false, so stored values are
+# normalised before comparing.
+BOOLEAN_OPTIONS = ('delete_previously_managed_groups',)
+
+_TRUE_STRINGS = ('t', 'true', 'y', 'yes')
+_FALSE_STRINGS = ('f', 'false', 'n', 'no')
 
 
 def is_sql(loader_type):
@@ -216,10 +229,41 @@ def build_desired_attributes(loader_type, options, naming):
 def _stringify(value):
     """Grouper attribute values are always strings."""
     if isinstance(value, bool):
-        return 'true' if value else 'false'
+        return 'T' if value else 'F'
     if isinstance(value, (list, tuple)):
         return ', '.join(str(item) for item in value)
     return str(value)
+
+
+def normalize_current(current, naming):
+    """Return ``current`` with boolean settings rewritten as ``T`` / ``F``.
+
+    Only used for comparison, so a loader saved with ``true`` (or by the UI as
+    ``T``) does not report a change.
+    """
+    boolean_names = set(naming.attribute_name(naming.option_map[option])
+                        for option in BOOLEAN_OPTIONS)
+    normalized = dict(current)
+    for name in boolean_names & set(current):
+        value = (current[name] or '').strip().lower()
+        if value in _TRUE_STRINGS:
+            normalized[name] = 'T'
+        elif value in _FALSE_STRINGS:
+            normalized[name] = 'F'
+    return normalized
+
+
+def implied_removals(options, naming, current):
+    """Settings that must be removed for the declared ones to take effect.
+
+    Grouper ignores delete-previously-managed-groups while a groups-like string
+    is stored (GrouperLoaderType#syncGroupList), and the UI blanks the like
+    string when the option is switched on. Do the same.
+    """
+    if options.get('delete_previously_managed_groups') is not True:
+        return []
+    groups_like = naming.attribute_name(naming.option_map['groups_like'])
+    return [groups_like] if groups_like in current else []
 
 
 def validate_options(loader_type, options):
@@ -237,6 +281,13 @@ def validate_options(loader_type, options):
         if name not in supplied:
             errors.append(
                 "option '%s' is required by loader type %s" % (name, loader_type))
+
+    if (options.get('delete_previously_managed_groups')
+            and options.get('groups_like') is not None):
+        errors.append(
+            "'delete_previously_managed_groups' and 'groups_like' are mutually "
+            "exclusive; delete_previously_managed_groups is Grouper's "
+            "replacement for groups_like")
 
     if loader_type in SQL_TYPES:
         schedule = options.get('schedule_type')
